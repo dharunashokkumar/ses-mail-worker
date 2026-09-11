@@ -49,11 +49,11 @@
 	},
 	"dependencies": {
 		"aws4fetch": "^1.0.20",
-		"chanfana": "2.8.3",
-		"hono": "4.10.7",
-		"postal-mime": "^2.6.1",
+		"chanfana": "3.4.0",
+		"hono": "4.13.7",
+		"postal-mime": "^3.0.0",
 		"workers-qb": "^1.11.2",
-		"zod": "^3.25.76"
+		"zod": "^4.5.4"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.10.11",
