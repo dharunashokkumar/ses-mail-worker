@@ -1,0 +1,51 @@
+/**
+ * Deployment of this fork, kept apart from packages/worker/dev, whose config the tests use.
+ * Build the dashboard first (`pnpm build-dashboard`), then run `wrangler deploy` here.
+ *
+ * Sending goes through Amazon SES. Set these on the deployed Worker:
+ *   EMAIL_PROVIDER=ses, AWS_SES_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+ */
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	"name": "email-explorer",
+	"main": "index.ts",
+	"compatibility_date": "2025-11-28",
+	"compatibility_flags": ["nodejs_compat", "enable_email_sending_queuing"],
+	"workers_dev": true,
+	"upload_source_maps": true,
+	"observability": {
+		"enabled": true
+	},
+	"assets": {
+		"directory": "../packages/dashboard/dist",
+		"binding": "ASSETS",
+		"html_handling": "auto-trailing-slash",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*", "/docs", "/openapi.json"]
+	},
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "email-explorer"
+		}
+	],
+	"send_email": [
+		{
+			"name": "SEND_EMAIL"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MAILBOX",
+				"class_name": "MailboxDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MailboxDO"]
+		}
+	]
+}
