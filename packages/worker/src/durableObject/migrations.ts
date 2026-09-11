@@ -59,6 +59,110 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX idx_emails_in_reply_to ON emails(in_reply_to);
         `,
 	},
+	{
+		name: "3_mail_features",
+		sql: `
+            ALTER TABLE emails ADD COLUMN message_id TEXT;
+            ALTER TABLE emails ADD COLUMN cc TEXT;
+            ALTER TABLE emails ADD COLUMN bcc TEXT;
+            ALTER TABLE emails ADD COLUMN preview TEXT;
+            ALTER TABLE emails ADD COLUMN category TEXT;
+            ALTER TABLE emails ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE emails ADD COLUMN snoozed_until INTEGER;
+            ALTER TABLE emails ADD COLUMN scheduled_at INTEGER;
+            ALTER TABLE emails ADD COLUMN remind_at INTEGER;
+            ALTER TABLE emails ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE emails ADD COLUMN list_unsubscribe TEXT;
+            ALTER TABLE emails ADD COLUMN spam_reason TEXT;
+            ALTER TABLE emails ADD COLUMN auth_results TEXT;
+            ALTER TABLE emails ADD COLUMN delivery_state TEXT;
+            ALTER TABLE emails ADD COLUMN delivery_detail TEXT;
+            ALTER TABLE emails ADD COLUMN delivery_at TEXT;
+            ALTER TABLE emails ADD COLUMN body_key TEXT;
+            ALTER TABLE emails ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE emails ADD COLUMN return_folder TEXT;
+            ALTER TABLE emails ADD COLUMN summary TEXT;
+
+            ALTER TABLE contacts ADD COLUMN last_seen INTEGER;
+            ALTER TABLE contacts ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0;
+
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('drafts', 'Drafts', 0),
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+
+            CREATE TABLE labels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL DEFAULT '#2b74e8',
+                position INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE email_labels (
+                email_id TEXT NOT NULL,
+                label_id TEXT NOT NULL,
+                PRIMARY KEY (email_id, label_id)
+            );
+
+            CREATE TABLE rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL DEFAULT 0,
+                match_all INTEGER NOT NULL DEFAULT 1,
+                conditions TEXT NOT NULL,
+                actions TEXT NOT NULL
+            );
+
+            CREATE TABLE blocked_senders (
+                address TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE saved_searches (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                subject TEXT,
+                body TEXT
+            );
+
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_emails_folder_date ON emails(folder_id, date DESC);
+            CREATE INDEX idx_emails_snoozed ON emails(snoozed_until);
+            CREATE INDEX idx_emails_scheduled ON emails(scheduled_at);
+            CREATE INDEX idx_emails_message_id ON emails(message_id);
+            CREATE INDEX idx_email_labels_label ON email_labels(label_id);
+        `,
+	},
+	{
+		name: "4_full_text_search",
+		sql: `
+            CREATE VIRTUAL TABLE emails_fts USING fts5(
+                email_id UNINDEXED,
+                subject,
+                sender,
+                recipient,
+                body,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            INSERT INTO emails_fts (email_id, subject, sender, recipient, body)
+                SELECT id, COALESCE(subject, ''), COALESCE(sender, ''),
+                       COALESCE(recipient, ''), COALESCE(body, '')
+                FROM emails;
+        `,
+	},
 ];
 
 export const authMigrations: Migration[] = [
