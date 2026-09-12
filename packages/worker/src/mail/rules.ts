@@ -48,6 +48,9 @@ function testCondition(
 	candidate: RuleCandidate,
 	condition: RuleCondition,
 ): boolean {
+	// Rules come from stored JSON, so a hand-edited or older row can hold
+	// anything. An unusable condition simply does not match.
+	if (!condition || typeof condition.value !== "string") return false;
 	const haystack = fieldValue(candidate, condition.field);
 	const needle = condition.value.trim().toLowerCase();
 	if (!needle) return false;
@@ -64,7 +67,10 @@ function testCondition(
 }
 
 export function ruleMatches(rule: Rule, candidate: RuleCandidate): boolean {
-	if (!rule.enabled || rule.conditions.length === 0) return false;
+	// Rules are stored as JSON, so an old or hand-edited row can hold anything.
+	// Inbound mail must not fail on one, so an unusable rule simply never matches.
+	if (!rule?.enabled || !Array.isArray(rule.conditions)) return false;
+	if (rule.conditions.length === 0) return false;
 	return rule.matchAll
 		? rule.conditions.every((c) => testCondition(candidate, c))
 		: rule.conditions.some((c) => testCondition(candidate, c));
@@ -82,7 +88,9 @@ export function applyRules(
 		addLabels: [],
 		matched: [],
 	};
-	const ordered = [...rules].sort((a, b) => a.position - b.position);
+	const ordered = [...(Array.isArray(rules) ? rules : [])].sort(
+		(a, b) => (a?.position ?? 0) - (b?.position ?? 0),
+	);
 
 	for (const rule of ordered) {
 		if (!ruleMatches(rule, candidate)) continue;

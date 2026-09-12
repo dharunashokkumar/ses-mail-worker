@@ -62,6 +62,14 @@ async function networkFirst(request, cacheName, fallback) {
 	}
 }
 
+// The app tells the worker when the signed-in identity changes, because cached
+// API answers belong to whoever was signed in when they were stored.
+self.addEventListener("message", (event) => {
+	if (event.data?.type === "clear-api-cache") {
+		event.waitUntil(caches.delete(API_CACHE));
+	}
+});
+
 self.addEventListener("fetch", (event) => {
 	const { request } = event;
 	if (request.method !== "GET") return;
@@ -69,8 +77,16 @@ self.addEventListener("fetch", (event) => {
 	const url = new URL(request.url);
 	if (url.origin !== self.location.origin) return;
 
-	// Live updates and attachment downloads go straight to the network.
-	if (url.pathname.endsWith("/live") || url.pathname.includes("/attachments/")) return;
+	// Live updates and attachment downloads go straight to the network, and so
+	// does the identity endpoint: a stale answer there would show the wrong
+	// account as signed in.
+	if (
+		url.pathname.endsWith("/live") ||
+		url.pathname.includes("/attachments/") ||
+		url.pathname === "/api/v1/identity"
+	) {
+		return;
+	}
 
 	if (request.mode === "navigate") {
 		event.respondWith(networkFirst(request, SHELL_CACHE, "/"));

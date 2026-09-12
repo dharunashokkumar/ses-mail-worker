@@ -39,7 +39,12 @@ export async function sendOutboundEmail(
 	}
 
 	// The binding takes a single envelope recipient.
-	const to = Array.isArray(message.to) ? message.to[0] : message.to;
+	const recipients = [
+		...(Array.isArray(message.to) ? message.to : [message.to]),
+		...(message.cc ?? []),
+		...(message.bcc ?? []),
+	].filter(Boolean);
+	const to = recipients[0];
 	await env.SEND_EMAIL.send(
 		new EmailMessage(message.from, to, buildMimeMessage(message)),
 	);

@@ -147,3 +147,30 @@ describe("SES naming and errors", () => {
 		);
 	});
 });
+
+describe("recipient classes", () => {
+	it("keeps To, Cc and Bcc in their own lists", () => {
+		const request = buildSesSendEmailRequest({
+			from: "me@dharun.dev",
+			to: ["a@example.com"],
+			cc: ["b@example.com"],
+			bcc: ["hidden@example.com"],
+			subject: "Hello",
+			text: "Hello",
+		});
+		expect(request.Destination.ToAddresses).toEqual(["a@example.com"]);
+		expect(request.Destination.CcAddresses).toEqual(["b@example.com"]);
+		expect(request.Destination.BccAddresses).toEqual(["hidden@example.com"]);
+	});
+
+	it("omits the empty lists", () => {
+		const request = buildSesSendEmailRequest({
+			from: "me@dharun.dev",
+			to: "a@example.com",
+			subject: "Hello",
+			text: "Hello",
+		});
+		expect(request.Destination.CcAddresses).toBeUndefined();
+		expect(request.Destination.BccAddresses).toBeUndefined();
+	});
+});

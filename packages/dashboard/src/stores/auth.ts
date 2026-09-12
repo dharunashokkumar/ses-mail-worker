@@ -90,6 +90,13 @@ export const useAuthStore = defineStore("auth", () => {
 			session.value = null;
 			localStorage.removeItem("session");
 			api.clearAuthToken();
+			// Cached mail belongs to the account that was signed in.
+			navigator.serviceWorker?.controller?.postMessage({
+				type: "clear-api-cache",
+			});
+			for (const key of Object.keys(localStorage)) {
+				if (key.startsWith("mail:cache:")) localStorage.removeItem(key);
+			}
 			loading.value = false;
 		}
 	}

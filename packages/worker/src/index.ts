@@ -3,6 +3,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { sessionFromAccess, usesAccess } from "./access";
+import { attachmentObjectKey } from "./mail/text";
 import { sendOutboundEmail } from "./outbound";
 import {
 	GetMe,
@@ -1204,8 +1205,16 @@ class GetAttachment extends OpenAPIRoute {
 			return c.json({ error: "Attachment not found" }, 404);
 		}
 
-		const attachmentKey = `attachments/${emailId}/${attachmentId}/${attachment.filename}`;
-		const attachmentObj = await c.env.BUCKET.get(attachmentKey);
+		// Rows written since the key was recorded carry it; older ones are still at
+		// the unsanitised path this route used to build.
+		const attachmentKey =
+			(attachment as { object_key?: string | null }).object_key ||
+			attachmentObjectKey(emailId, attachmentId, String(attachment.filename));
+		const attachmentObj =
+			(await c.env.BUCKET.get(attachmentKey)) ??
+			(await c.env.BUCKET.get(
+				`attachments/${emailId}/${attachmentId}/${attachment.filename}`,
+			));
 
 		if (!attachmentObj) {
 			return c.json({ error: "Attachment file not found" }, 404);
@@ -1547,9 +1556,14 @@ async function validateSession(
 	request: Request,
 	env: Env,
 ): Promise<Session | null> {
-	// Behind Cloudflare Access the signed Access JWT is the session.
+	// Behind Cloudflare Access the signed Access JWT is the session. A JWKS fetch
+	// that fails means we cannot verify the token, which is a 401, not a 500.
 	if (usesAccess(env)) {
-		return sessionFromAccess(request, env);
+		try {
+			return await sessionFromAccess(request, env);
+		} catch {
+			return null;
+		}
 	}
 
 	const token = getSessionToken(request);
@@ -1773,6 +1787,7 @@ export function EmailExplorer(_options: EmailExplorerOptions = {}) {
 				});
 
 				// Middleware to check mailbox access for non-admin users
+				const WRITE_ROLES = ["owner", "admin", "write"];
 				const checkMailboxAccess = async (c: any, next: any) => {
 					if (session.isAdmin) {
 						await next();
@@ -1786,9 +1801,22 @@ export function EmailExplorer(_options: EmailExplorerOptions = {}) {
 					const authId = env.MAILBOX.idFromName("AUTH");
 					const authDO = env.MAILBOX.get(authId);
 					const userMailboxes = await authDO.getUserMailboxes(session.userId);
-					if (!userMailboxes.some((m: any) => m.mailboxId === mailboxId)) {
+					const grant = userMailboxes.find(
+						(m: any) => m.mailboxId === mailboxId,
+					);
+					if (!grant) {
 						return c.json(
 							{ error: "You don't have access to this mailbox" },
+							403,
+						);
+					}
+					// A read-only grant may read, and nothing else.
+					if (
+						c.req.method !== "GET" &&
+						!WRITE_ROLES.includes(String(grant.role).toLowerCase())
+					) {
+						return c.json(
+							{ error: "Your access to this mailbox is read-only" },
 							403,
 						);
 					}

@@ -75,6 +75,12 @@ export interface ThreadDetail {
 	messages: Message[];
 }
 
+/** A correspondent, for recipient autocomplete. */
+export interface Contact {
+	name: string;
+	email: string;
+}
+
 export interface Label {
 	id: string;
 	name: string;

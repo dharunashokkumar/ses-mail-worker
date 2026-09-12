@@ -121,7 +121,6 @@ import CommandPalette from "@/components/mail/CommandPalette.vue";
 import ComposerWindow from "@/components/mail/ComposerWindow.vue";
 import MailIcon from "@/components/mail/MailIcon.vue";
 import MailSidebar from "@/components/mail/MailSidebar.vue";
-import type { Contact } from "@/components/mail/RecipientField.vue";
 import SettingsSheet from "@/components/mail/SettingsSheet.vue";
 import ThreadList from "@/components/mail/ThreadList.vue";
 import ThreadView from "@/components/mail/ThreadView.vue";
@@ -129,6 +128,7 @@ import { mailApi } from "@/services/mail";
 import { useComposeStore } from "@/stores/compose";
 import { useMailStore } from "@/stores/mail";
 import { usePrefsStore } from "@/stores/prefs";
+import type { Contact } from "@/types/mail";
 
 interface Toast {
 	id: number;
@@ -240,6 +240,12 @@ function onScheduled(at: number) {
 	void mail.loadCounts();
 }
 
+/** Back online: send what was written offline, then replay queued changes. */
+function onOnline() {
+	void compose.drainOutbox();
+	void mail.drainMutations();
+}
+
 /** Cmd/Ctrl+K only: no single-key shortcuts to fire while you are typing. */
 function onKeydown(event: KeyboardEvent) {
 	if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -271,6 +277,17 @@ watch(
 			},
 			prefs.prefs.undoSeconds * 1000,
 		);
+	},
+);
+
+// Back, forward and shared links change only ?thread=, so follow it.
+watch(
+	() => route.query.thread,
+	(value) => {
+		const threadId = typeof value === "string" ? value : "";
+		if (threadId === mail.openThreadId) return;
+		if (threadId) void mail.openThread(threadId);
+		else mail.closeThread();
 	},
 );
 
@@ -352,7 +369,7 @@ function authHeader(): Record<string, string> {
 onMounted(async () => {
 	prefs.apply();
 	document.addEventListener("keydown", onKeydown);
-	window.addEventListener("online", () => void compose.drainOutbox());
+	window.addEventListener("online", onOnline);
 
 	await mail.loadIdentity();
 	await mail.loadMailboxes();
@@ -379,6 +396,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
 	document.removeEventListener("keydown", onKeydown);
+	window.removeEventListener("online", onOnline);
 	mail.disconnectLive();
 });
 </script>

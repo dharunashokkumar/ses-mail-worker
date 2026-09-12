@@ -4,6 +4,9 @@
 interface MimeMessageOptions {
 	from: string;
 	to: string | string[];
+	cc?: string[];
+	/** Never written into the message: Bcc recipients stay in the envelope. */
+	bcc?: string[];
 	subject: string;
 	text?: string;
 	html?: string;
@@ -19,8 +22,17 @@ interface MimeMessageOptions {
 }
 
 export function buildMimeMessage(options: MimeMessageOptions): string {
-	const { from, to, subject, text, html, attachments, inReplyTo, references } =
-		options;
+	const {
+		from,
+		to,
+		cc,
+		subject,
+		text,
+		html,
+		attachments,
+		inReplyTo,
+		references,
+	} = options;
 
 	const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 	const altBoundary = `----=_Alt_${Date.now()}_${Math.random().toString(36).substring(2)}`;
@@ -33,6 +45,7 @@ export function buildMimeMessage(options: MimeMessageOptions): string {
 	// Headers
 	mime += `From: ${from}\r\n`;
 	mime += `To: ${toStr}\r\n`;
+	if (cc && cc.length > 0) mime += `Cc: ${cc.join(", ")}\r\n`;
 	mime += `Subject: ${subject}\r\n`;
 	mime += `MIME-Version: 1.0\r\n`;
 	mime += `Date: ${new Date().toUTCString()}\r\n`;

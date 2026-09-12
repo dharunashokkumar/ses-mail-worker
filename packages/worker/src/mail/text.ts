@@ -43,6 +43,21 @@ export function safeKeySegment(value: string): string {
 	return value.replace(/[^A-Za-z0-9._@+-]/g, "_").slice(0, 180);
 }
 
+/**
+ * R2 key for an attachment.
+ *
+ * Message ids can hold characters an object key should not, so both halves are
+ * sanitised here — and the result is stored on the row, so a download never has
+ * to guess how the id was normalised.
+ */
+export function attachmentObjectKey(
+	messageId: string,
+	attachmentId: string,
+	filename: string,
+): string {
+	return `attachments/${safeKeySegment(messageId)}/${attachmentId}/${safeKeySegment(filename) || "untitled"}`;
+}
+
 /** Display name for an address, falling back to the local part. */
 export function displayName(name: string | undefined, address: string): string {
 	const trimmed = (name || "").trim();

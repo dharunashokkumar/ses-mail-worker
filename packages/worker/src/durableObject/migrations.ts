@@ -169,6 +169,24 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN sender_name TEXT;
         `,
 	},
+	{
+		name: "6_attachment_keys_and_system_folders",
+		sql: `
+            ALTER TABLE attachments ADD COLUMN object_key TEXT;
+
+            UPDATE emails SET folder_id = folder_id || '-user'
+                WHERE folder_id IN (
+                    SELECT id FROM folders
+                    WHERE id IN ('drafts', 'snoozed', 'scheduled') AND is_deletable = 1
+                );
+            UPDATE folders SET id = id || '-user', name = name || ' (yours)'
+                WHERE id IN ('drafts', 'snoozed', 'scheduled') AND is_deletable = 1;
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('drafts', 'Drafts', 0),
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+        `,
+	},
 ];
 
 export const authMigrations: Migration[] = [
