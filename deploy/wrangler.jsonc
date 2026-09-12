@@ -4,6 +4,12 @@
  *
  * Sending goes through Amazon SES. Set these on the deployed Worker:
  *   EMAIL_PROVIDER=ses, AWS_SES_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+ *
+ * Optional secrets, each unlocking one feature:
+ *   AUTH_MODE=access, ACCESS_AUD, ACCESS_TEAM_DOMAIN  — Cloudflare Access replaces the login
+ *   SES_WEBHOOK_TOKEN                                 — guards /api/v1/webhooks/ses (SNS)
+ *   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, MAIL_DOMAIN — create addresses from Settings
+ *   AWS_SES_CONFIGURATION_SET, AWS_SES_MESSAGE_ID_DOMAIN
  */
 {
 	"$schema": "../node_modules/wrangler/config-schema.json",
@@ -34,6 +40,11 @@
 			"name": "SEND_EMAIL"
 		}
 	],
+	// Thread summaries, quick replies and the composer's rewrite. The free tier
+	// is 10,000 neurons a day; the Durable Object stops calling before it errors.
+	"ai": {
+		"binding": "AI"
+	},
 	"durable_objects": {
 		"bindings": [
 			{

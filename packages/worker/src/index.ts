@@ -1,8 +1,8 @@
 import { contentJson, fromHono, OpenAPIRoute } from "chanfana";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
-import PostalMime from "postal-mime";
 import { z } from "zod";
+import { sessionFromAccess, usesAccess } from "./access";
 import { sendOutboundEmail } from "./outbound";
 import {
 	GetMe,
@@ -15,6 +15,7 @@ import {
 	PostRevokeAccess,
 	PutUser,
 } from "./routes/auth";
+import { registerMailRoutes, registerWebhookRoutes } from "./routes/mail";
 import { PostForwardEmail, PostReplyEmail } from "./routes/reply-forward";
 import type { EmailExplorerOptions, Env, Session } from "./types";
 
@@ -1546,6 +1547,11 @@ async function validateSession(
 	request: Request,
 	env: Env,
 ): Promise<Session | null> {
+	// Behind Cloudflare Access the signed Access JWT is the session.
+	if (usesAccess(env)) {
+		return sessionFromAccess(request, env);
+	}
+
 	const token = getSessionToken(request);
 	if (!token) return null;
 
@@ -1568,6 +1574,7 @@ function isPublicRoute(pathname: string): boolean {
 		"/api/v1/auth/forgot-password",
 		"/api/v1/auth/reset-password",
 		"/api/v1/settings",
+		"/api/v1/webhooks/",
 		"/api/docs",
 		"/api/openapi.json",
 	];
@@ -1636,6 +1643,10 @@ openapi.get(
 	GetAttachment,
 );
 
+// The dashboard's own API: threads, labels, rules, drafts, AI and live updates.
+registerMailRoutes(app as any);
+registerWebhookRoutes(app as any);
+
 async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	const result = new Uint8Array(streamSize);
 	let bytesRead = 0;
@@ -1651,83 +1662,54 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
+/**
+ * The recipient, read from the raw headers.
+ *
+ * Only used when the runtime does not give us `event.to`: a regex over the
+ * header block costs a fraction of what parsing the MIME would, and parsing is
+ * the Durable Object's job.
+ */
+function recipientFromRaw(raw: Uint8Array): string | null {
+	const headerText = new TextDecoder().decode(raw.subarray(0, 32_768));
+	const headerBlock = headerText.split(/\r?\n\r?\n/)[0] ?? headerText;
+	const unfolded = headerBlock.replace(/\r?\n[ \t]+/g, " ");
+	const match = unfolded.match(
+		/^(?:to|delivered-to|x-forwarded-to):\s*(.+)$/im,
+	);
+	if (!match) return null;
+	const address = match[1].match(/[^<>\s,;()]+@[^<>\s,;()]+/);
+	return address ? address[0].toLowerCase() : null;
+}
+
+/**
+ * Inbound mail. The Worker only moves bytes: MIME parsing, attachment uploads,
+ * rules, spam scoring and indexing all happen inside the Durable Object, which
+ * has 30 s of CPU against the Worker's 10 ms.
+ */
 async function receiveEmail(
-	event: { raw: ReadableStream; rawSize: number },
+	event: { raw: ReadableStream; rawSize: number; to?: string },
 	env: Env,
 	_ctx: ExecutionContext,
 ) {
-	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
-	const parser = new PostalMime();
-	const parsedEmail = await parser.parse(rawEmail);
-
-	if (
-		!parsedEmail.to ||
-		parsedEmail.to.length === 0 ||
-		!parsedEmail.to[0].address
-	) {
+	const raw = await streamToArrayBuffer(event.raw, event.rawSize);
+	const mailboxId = event.to?.toLowerCase() || recipientFromRaw(raw);
+	if (!mailboxId) {
 		throw new Error("received email with empty to");
 	}
 
-	const mailboxId = parsedEmail.to[0].address;
-	const messageId = crypto.randomUUID();
-
+	// A mailbox exists once its marker object does.
 	const key = `mailboxes/${mailboxId}.json`;
-	const obj = await env.BUCKET.head(key);
-	if (!obj) {
+	if (!(await env.BUCKET.head(key))) {
 		await env.BUCKET.put(key, JSON.stringify({}));
 	}
 
-	const ns = env.MAILBOX;
-	const id = ns.idFromName(mailboxId);
-	const stub = ns.get(id);
-
-	const attachmentData = [];
-	if (parsedEmail.attachments) {
-		for (const att of parsedEmail.attachments) {
-			const attachmentId = crypto.randomUUID();
-			const key = `attachments/${messageId}/${attachmentId}/${att.filename}`;
-			await env.BUCKET.put(key, att.content);
-			attachmentData.push({
-				id: attachmentId,
-				email_id: messageId,
-				filename: att.filename || "untitled",
-				mimetype: att.mimeType,
-				size:
-					typeof att.content === "string"
-						? att.content.length
-						: att.content.byteLength,
-				content_id: att.contentId || null,
-				disposition: att.disposition,
-			});
-		}
-	}
-
-	// Parse threading headers from incoming email
-	// Strip angle brackets from message IDs since postal-mime returns raw RFC 2822
-	// values (e.g. "<msg@example.com>") but we store bare IDs to match outgoing emails
-	const stripBrackets = (s: string) => s.replace(/^</, "").replace(/>$/, "");
-	const inReplyTo = parsedEmail.inReplyTo
-		? stripBrackets(parsedEmail.inReplyTo)
-		: null;
-	const emailReferences = parsedEmail.references
-		? parsedEmail.references.split(/\s+/).filter(Boolean).map(stripBrackets)
-		: [];
-
-	await stub.createEmail(
-		"inbox",
-		{
-			id: messageId,
-			subject: parsedEmail.subject || "",
-			sender: parsedEmail.from?.address || "",
-			recipient: parsedEmail.to[0].address,
-			date: new Date().toISOString(),
-			body: parsedEmail.html || parsedEmail.text || "",
-			in_reply_to: inReplyTo,
-			email_references:
-				emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
-			thread_id: emailReferences[0] || inReplyTo || messageId,
-		},
-		attachmentData,
+	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	await stub.ingestRaw(
+		raw.buffer.slice(
+			raw.byteOffset,
+			raw.byteOffset + raw.byteLength,
+		) as ArrayBuffer,
+		mailboxId,
 	);
 }
 
@@ -1750,7 +1732,7 @@ export function EmailExplorer(_options: EmailExplorerOptions = {}) {
 
 	return {
 		async email(
-			event: { raw: ReadableStream; rawSize: number },
+			event: { raw: ReadableStream; rawSize: number; to?: string },
 			env: Env,
 			context: ExecutionContext,
 		) {
