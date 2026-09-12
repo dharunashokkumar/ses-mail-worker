@@ -1,18 +1,12 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import Admin from "@/views/Admin.vue";
-import Contacts from "@/views/Contacts.vue";
-import EmailDetail from "@/views/EmailDetail.vue";
-import EmailList from "@/views/EmailList.vue";
 import ForgotPassword from "@/views/ForgotPassword.vue";
-import Home from "@/views/Home.vue";
 import Login from "@/views/Login.vue";
-import Mailbox from "@/views/Mailbox.vue";
+import MailView from "@/views/MailView.vue";
 import NotFound from "@/views/NotFound.vue";
 import Register from "@/views/Register.vue";
 import ResetPassword from "@/views/ResetPassword.vue";
-import SearchResults from "@/views/SearchResults.vue";
-import Settings from "@/views/Settings.vue";
 
 const router = createRouter({
 	history: createWebHistory(import.meta.env.BASE_URL),
@@ -21,7 +15,7 @@ const router = createRouter({
 			path: "/login",
 			name: "Login",
 			component: Login,
-			meta: { title: "Login", public: true },
+			meta: { title: "Sign in", public: true },
 		},
 		{
 			path: "/register",
@@ -33,121 +27,116 @@ const router = createRouter({
 			path: "/forgot-password",
 			name: "ForgotPassword",
 			component: ForgotPassword,
-			meta: { title: "Forgot Password", public: true },
+			meta: { title: "Forgot password", public: true },
 		},
 		{
 			path: "/reset-password",
 			name: "ResetPassword",
 			component: ResetPassword,
-			meta: { title: "Reset Password", public: true },
-		},
-		{
-			path: "/",
-			name: "Home",
-			component: Home,
-			meta: { title: "Home", requiresAuth: true },
+			meta: { title: "Reset password", public: true },
 		},
 		{
 			path: "/admin",
 			name: "Admin",
 			component: Admin,
-			meta: { title: "Admin Panel", requiresAuth: true, requiresAdmin: true },
+			meta: { title: "Admin", requiresAuth: true, requiresAdmin: true },
 		},
 		{
-			path: "/mailbox/:mailboxId",
-			name: "Mailbox",
-			component: Mailbox,
+			path: "/",
+			redirect: { name: "Mail" },
+		},
+		{
+			path: "/mail/:mailboxId?/:folder?",
+			name: "Mail",
+			component: MailView,
 			meta: { requiresAuth: true },
-			redirect: (to) => {
-				return {
-					name: "EmailList",
-					params: { mailboxId: to.params.mailboxId, folder: "inbox" },
-				};
-			},
-			children: [
-				{
-					path: "emails/:folder",
-					name: "EmailList",
-					component: EmailList,
-					meta: { title: "Emails" },
-				},
-				{
-					path: "email/:id",
-					name: "EmailDetail",
-					component: EmailDetail,
-					meta: { title: "Email" },
-				},
-				{
-					path: "contacts",
-					name: "Contacts",
-					component: Contacts,
-					meta: { title: "Contacts" },
-				},
-				{
-					path: "settings",
-					name: "Settings",
-					component: Settings,
-					meta: { title: "Settings" },
-				},
-				{
-					path: "search",
-					name: "SearchResults",
-					component: SearchResults,
-					meta: { title: "Search" },
-				},
-			],
+		},
+		// Links from the previous dashboard keep working.
+		{
+			path: "/mailbox/:mailboxId/emails/:folder",
+			redirect: (to) => ({
+				name: "Mail",
+				params: { mailboxId: to.params.mailboxId, folder: to.params.folder },
+			}),
+		},
+		{
+			path: "/mailbox/:mailboxId/email/:id",
+			redirect: (to) => ({
+				name: "Mail",
+				params: { mailboxId: to.params.mailboxId, folder: "inbox" },
+				query: { thread: String(to.params.id) },
+			}),
+		},
+		{
+			path: "/mailbox/:mailboxId/:rest(.*)?",
+			redirect: (to) => ({
+				name: "Mail",
+				params: { mailboxId: to.params.mailboxId, folder: "inbox" },
+			}),
 		},
 		{
 			path: "/:pathMatch(.*)*",
 			name: "NotFound",
 			component: NotFound,
-			meta: { title: "Not Found" },
+			meta: { title: "Not found" },
 		},
 	],
 });
 
-// Navigation guard for authentication
+/**
+ * Ask the server whether this browser is already authenticated.
+ *
+ * Behind Cloudflare Access there is no app session to inspect — Access has
+ * authenticated the request at the edge — so an answer from `/api/v1/identity`
+ * is the proof. The same check covers a deployment with auth switched off.
+ */
+let serverAuth: boolean | null = null;
+
+async function authenticatedByServer(): Promise<boolean> {
+	if (serverAuth !== null) return serverAuth;
+	try {
+		const response = await fetch("/api/v1/identity");
+		serverAuth = response.ok;
+	} catch {
+		serverAuth = false;
+	}
+	return serverAuth;
+}
+
 router.beforeEach(async (to, _from, next) => {
 	const authStore = useAuthStore();
 	const isPublicRoute = to.meta.public === true;
-	const requiresAuth = to.meta.requiresAuth !== false; // Auth required by default
+	const requiresAuth = to.meta.requiresAuth === true;
 	const requiresAdmin = to.meta.requiresAdmin === true;
 
-	// Initialize auth token if exists
-	if (authStore.session && !authStore.loading) {
-		const sessionData = authStore.session;
-		// Check if session is expired
-		if (sessionData.expiresAt < Date.now()) {
-			await authStore.logout();
-		}
+	if (authStore.session && authStore.session.expiresAt < Date.now()) {
+		await authStore.logout();
 	}
 
-	if (!isPublicRoute && requiresAuth && !authStore.isAuthenticated) {
-		// Redirect to login if not authenticated
+	const authenticated =
+		authStore.isAuthenticated || (await authenticatedByServer());
+
+	if (requiresAuth && !authenticated) {
 		next({ name: "Login", query: { redirect: to.fullPath } });
-	} else if (requiresAdmin && !authStore.isAdmin) {
-		// Redirect to home if not admin
-		next({ name: "Home" });
-	} else if (
+		return;
+	}
+	if (requiresAdmin && !authStore.isAdmin && !(await authenticatedByServer())) {
+		next({ name: "Mail" });
+		return;
+	}
+	if (
 		isPublicRoute &&
 		authStore.isAuthenticated &&
-		(to.name === "Login" ||
-			to.name === "Register" ||
-			to.name === "ForgotPassword")
+		to.name !== "ResetPassword"
 	) {
-		// Redirect to home if already authenticated and trying to access login/register/forgot-password
-		next({ name: "Home" });
-	} else {
-		next();
+		next({ name: "Mail" });
+		return;
 	}
+	next();
 });
 
 router.afterEach((to) => {
-	if (to.meta.title) {
-		document.title = `${to.meta.title} - Email Explorer`;
-	} else {
-		document.title = "Email Explorer";
-	}
+	document.title = to.meta.title ? `${to.meta.title} · Mail` : "Mail";
 });
 
 export default router;

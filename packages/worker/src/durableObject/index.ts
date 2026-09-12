@@ -46,6 +46,7 @@ export interface ThreadSummary {
 	folderId: string;
 	subject: string;
 	sender: string;
+	senderName: string | null;
 	recipient: string;
 	cc: string | null;
 	date: string;
@@ -130,6 +131,7 @@ export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	#qb: DOQB;
 	#isAuthDO: boolean;
+	#mailboxAddress = "";
 
 	constructor(state: DurableObjectState, env: Env) {
 		super(state, env);
@@ -891,6 +893,17 @@ export class MailboxDO extends DurableObject<Env> {
 	// Worker only has to hand over bytes and pass answers back.
 	// ------------------------------------------------------------------
 
+	/** The address this Durable Object holds mail for. */
+	get #address(): string {
+		if (!this.#mailboxAddress) {
+			const row = this.#exec<{ recipient: string }>(
+				"SELECT recipient FROM emails WHERE folder_id NOT IN ('sent', 'drafts', 'scheduled') ORDER BY date DESC LIMIT 1",
+			)[0];
+			this.#mailboxAddress = row ? String(row.recipient).toLowerCase() : "";
+		}
+		return this.#mailboxAddress;
+	}
+
 	#exec<T = Record<string, any>>(query: string, ...params: any[]): T[] {
 		return this.ctx.storage.sql.exec(query, ...params).toArray() as T[];
 	}
@@ -1469,7 +1482,7 @@ export class MailboxDO extends DurableObject<Env> {
 		for (const chunk of MailboxDO.#chunk(gids)) {
 			rows.push(
 				...this.#exec<Record<string, any>>(
-					`SELECT id, ${group} AS gid, folder_id, subject, sender, recipient, cc, date, read,
+					`SELECT id, ${group} AS gid, folder_id, subject, sender, sender_name, recipient, cc, date, read,
                             starred, pinned, preview, category, has_attachments, snoozed_until,
                             scheduled_at, delivery_state, delivery_detail, list_unsubscribe,
                             spam_reason, message_id, summary
@@ -1501,12 +1514,18 @@ export class MailboxDO extends DurableObject<Env> {
 					labels.add(label);
 				if (message.sender) participants.add(String(message.sender));
 			}
+			// A list row should name the correspondent, not you: when your own
+			// reply is the newest message, fall back to the last one that is not.
+			const counterpart =
+				messages.find((message) => String(message.sender) !== this.#address) ??
+				latest;
 			return {
 				threadId: gid,
 				id: String(latest.id ?? gid),
 				folderId: String(latest.folder_id ?? ""),
 				subject: String(latest.subject ?? ""),
-				sender: String(latest.sender ?? ""),
+				sender: String(counterpart.sender ?? latest.sender ?? ""),
+				senderName: String(counterpart.sender_name ?? "") || null,
 				recipient: String(latest.recipient ?? ""),
 				cc: latest.cc ? String(latest.cc) : null,
 				date: String(latest.date ?? ""),
@@ -1906,14 +1925,15 @@ export class MailboxDO extends DurableObject<Env> {
 
 		this.ctx.storage.sql.exec(
 			`INSERT INTO emails (
-                id, folder_id, subject, sender, recipient, cc, date, read, starred, pinned, body,
-                in_reply_to, email_references, thread_id, message_id, preview, category,
+                id, folder_id, subject, sender, sender_name, recipient, cc, date, read, starred,
+                pinned, body, in_reply_to, email_references, thread_id, message_id, preview, category,
                 has_attachments, list_unsubscribe, spam_reason, auth_results, body_key, size
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			messageId,
 			folder,
 			subject,
 			sender,
+			senderName,
 			mailbox,
 			addressList(parsed.cc as any).join(", ") || null,
 			new Date(parsed.date ?? Date.now()).toISOString(),
@@ -2000,13 +2020,14 @@ export class MailboxDO extends DurableObject<Env> {
 		const preview = previewOf(body, Boolean(input.html));
 		this.ctx.storage.sql.exec(
 			`INSERT INTO emails (
-                id, folder_id, subject, sender, recipient, cc, bcc, date, read, body, preview,
-                in_reply_to, email_references, thread_id, message_id, has_attachments, size,
+                id, folder_id, subject, sender, sender_name, recipient, cc, bcc, date, read, body,
+                preview, in_reply_to, email_references, thread_id, message_id, has_attachments, size,
                 delivery_state, delivery_detail, delivery_at, remind_at
-            ) VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)`,
+            ) VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)`,
 			input.id,
 			input.subject,
 			input.from,
+			displayName(undefined, input.from),
 			input.to.join(", "),
 			input.cc?.join(", ") || null,
 			input.bcc?.join(", ") || null,

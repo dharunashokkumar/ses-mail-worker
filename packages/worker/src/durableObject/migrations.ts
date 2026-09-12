@@ -163,6 +163,12 @@ export const mailboxMigrations: Migration[] = [
                 FROM emails;
         `,
 	},
+	{
+		name: "5_sender_display_name",
+		sql: `
+            ALTER TABLE emails ADD COLUMN sender_name TEXT;
+        `,
+	},
 ];
 
 export const authMigrations: Migration[] = [

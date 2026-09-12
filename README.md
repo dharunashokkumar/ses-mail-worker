@@ -14,7 +14,7 @@ browser ──> static dashboard (no Worker CPU) ──> /api/* on the Worker �
 compose ──> /api/* ──> Worker ──> Amazon SES API v2 ──> recipient
 ```
 
-- **Receiving:** Email Routing hands each message to the Worker, which parses it and stores it in that address's Durable Object (SQLite). Attachments go to R2. A mailbox appears the first time mail arrives for an address.
+- **Receiving:** Email Routing hands each message to the Worker, which reads the bytes and passes them to that address's Durable Object. The Durable Object parses the MIME, files the message, indexes it for search and puts attachments in R2 — it has 30 s of CPU where the Worker has 10 ms. A mailbox appears the first time mail arrives for an address.
 - **Reading:** the Vue dashboard is served as static files. Only `/api/*` requests run Worker code, a small Hono API.
 - **Sending:** the Worker signs a request to the SES API. SES builds the message, DKIM-signs it for your domain and delivers it to every recipient. The sent copy is stored under the Message-ID SES assigns, so replies land in the same conversation.
 
@@ -31,10 +31,29 @@ The Workers Free plan allows 10 ms of CPU per request, and Cloudflare's own Emai
 
 ## Features
 
-- Inbox, folders, contacts, search and attachments
-- Rich text composer; reply, reply all and forward
-- Multiple users: the first to register becomes admin and registration closes; admins create users and grant mailbox access (owner, admin, write, read)
-- Sessions in HttpOnly cookies, valid for 30 days
+**Reading**
+- Conversations grouped by Message-ID, with a switch to see every message on its own row
+- Reading pane right, bottom or off; compact, cozy or relaxed density; light, dark or system theme with a choice of accent
+- Labels, pin and flag, snooze that brings mail back later, and automatic Newsletters / Notifications / Receipts categories
+- Full-text search with operators — `from:`, `to:`, `label:`, `has:attachment`, `is:unread`, `before:`, `on:` — plus saved searches
+- Live updates over a hibernating WebSocket, so new mail appears without polling
+
+**Writing**
+- Floating composer, inline replies, full-screen on a phone
+- Recipient chips with autocomplete from contacts collected automatically, Cc/Bcc, drag-and-drop attachments
+- Auto-saved drafts, undo send, scheduled send, follow-up reminders, templates, and rich text with Markdown shortcuts
+- Send from any address on the domain
+
+**Keeping the inbox clean**
+- Rules that file mail as it arrives, a blocklist, one-click unsubscribe, and spam held on SPF/DKIM/DMARC failures with the reason shown
+- Delivery status per sent message from Amazon SES
+
+**The rest**
+- Installable PWA that reads cached mail offline and queues what you write until the network is back
+- `Ctrl`/`⌘` + `K` command palette; swipe actions on touch screens
+- Thread summaries, quick replies and composer rewrite on the Workers AI free tier, degrading quietly when the daily budget is gone
+- Storage usage and a full export built in the browser
+- Cloudflare Access can replace the built-in login, or keep it: the first account to register becomes admin and registration closes
 
 ## Setup
 
@@ -72,6 +91,23 @@ npx wrangler secret put AWS_SECRET_ACCESS_KEY
 
 Optional: `AWS_SES_CONFIGURATION_SET`, and `AWS_SES_MESSAGE_ID_DOMAIN` (defaults to `<region>.amazonses.com`, or `email.amazonses.com` in us-east-1).
 
+Three more secrets each turn on one feature:
+
+```bash
+# Cloudflare Access instead of the built-in login
+printf access | npx wrangler secret put AUTH_MODE
+npx wrangler secret put ACCESS_AUD            # the Access application's AUD tag
+npx wrangler secret put ACCESS_TEAM_DOMAIN    # e.g. example.cloudflareaccess.com
+
+# delivery status from SES (see below)
+npx wrangler secret put SES_WEBHOOK_TOKEN     # any long random string
+
+# creating addresses from Settings
+npx wrangler secret put CLOUDFLARE_API_TOKEN  # scoped to Email Routing on the zone
+npx wrangler secret put CLOUDFLARE_ZONE_ID
+printf example.com | npx wrangler secret put MAIL_DOMAIN
+```
+
 ### 4. Route mail to the Worker
 
 In the Cloudflare dashboard, open your domain's **Email Routing** and add a routing rule for each address you want, for example `me@example.com`, with the action *Send to a Worker* and your Worker selected. Keep the catch-all disabled: every address that reaches the Worker gets its own mailbox.
@@ -79,6 +115,26 @@ In the Cloudflare dashboard, open your domain's **Email Routing** and add a rout
 ### 5. First login
 
 Open the Worker's URL and register. The first account becomes admin and registration closes. Your mailbox appears when the first email to its address arrives.
+
+### 6. Optional: Cloudflare Access
+
+If you are the only user, put Cloudflare Access in front of the Worker instead
+of using the built-in login. Add an Access application covering the Worker's
+hostname, allow your own email, and set `AUTH_MODE`, `ACCESS_AUD` and
+`ACCESS_TEAM_DOMAIN` as above — the Worker then verifies the Access JWT (with a
+cached JWKS, so no subrequest per request) and the login, register and password
+screens are never used.
+
+Add one **bypass** policy for `/api/v1/webhooks/*` so Amazon SNS can still post
+delivery notifications.
+
+### 7. Optional: delivery status from SES
+
+1. In SES, create a **configuration set** and set `AWS_SES_CONFIGURATION_SET` to its name.
+2. Add an event destination pointing at an SNS topic, subscribed to Send, Delivery, Bounce, Complaint, Open and Click.
+3. Subscribe that topic to `https://<your-worker>/api/v1/webhooks/ses?token=<SES_WEBHOOK_TOKEN>` as an HTTPS endpoint. The Worker confirms the subscription itself.
+
+Sent mail then shows Delivered, Opened or Bounced with the provider's reason.
 
 ## Development
 
@@ -94,9 +150,10 @@ Architecture notes for contributors are in [CLAUDE.md](CLAUDE.md), and user guid
 ## Known limitations
 
 - One mailbox per user account; admins can grant access to more.
-- Passwords are stored as a single SHA-256 digest rather than a slow password hash, so use a unique password.
-- Received emails are stored under random IDs, so the `In-Reply-To` of a reply you send doesn't name the original Message-ID and some mail clients won't thread it. Gmail still groups by subject.
+- Passwords are stored as a single SHA-256 digest rather than a slow password hash, so use a unique password — or put Cloudflare Access in front and skip the built-in login.
 - Password recovery by email (`accountRecovery.fromEmail`) is off in `deploy/index.ts`.
+- There is no importer: mail already elsewhere stays there.
+- Web push is not wired up; live updates arrive over a WebSocket while the app is open.
 - Without `EMAIL_PROVIDER=ses`, sending falls back to Cloudflare's `send_email` binding, which reaches only the first recipient and needs Cloudflare Email Sending.
 
 ## Credits and license

@@ -1,12 +1,32 @@
 <!DOCTYPE html>
-<html lang="">
+<html lang="en">
   <head>
-    <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vite App</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Mail</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101014" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="description" content="Your own mail on your own domain." />
+    <script>
+      // Apply the saved theme and density before the first paint.
+      try {
+        const saved = JSON.parse(localStorage.getItem("mail:preferences") || "{}");
+        if (saved.theme && saved.theme !== "system") {
+          document.documentElement.setAttribute("data-theme", saved.theme);
+        }
+        document.documentElement.setAttribute("data-density", saved.density || "cozy");
+        if (saved.accent) document.documentElement.style.setProperty("--accent", saved.accent);
+      } catch (error) {
+        // no stored preferences: the defaults apply
+      }
+    </script>
   </head>
-  <body class="bg-gray-900 text-gray-100">
+  <body>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
