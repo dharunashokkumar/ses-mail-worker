@@ -274,6 +274,14 @@ watch(
 	},
 );
 
+// The palette and saved searches change the scope; keep the box in step.
+watch(
+	() => mail.scope.query,
+	(value) => {
+		searchText.value = value;
+	},
+);
+
 watch(
 	() => route.params.mailboxId,
 	async (value) => {

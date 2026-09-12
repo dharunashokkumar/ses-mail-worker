@@ -260,6 +260,8 @@ export const useMailStore = defineStore("mail", {
 					{ threadIds: [threadId], read: true },
 					{ silent: true },
 				);
+				// The row updated instantly; the folder badges need the server's count.
+				await this.loadCounts();
 			}
 		},
 
