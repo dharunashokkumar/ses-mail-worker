@@ -1,8 +1,16 @@
 packages:
   - "packages/*"
   - "packages/worker/dev"
+# esbuild, workerd, sharp and @parcel/watcher fetch a platform binary in their
+# install script, so pnpm has to be told to run it. `allowBuilds` is the pnpm 12
+# name; `onlyBuiltDependencies` is the pnpm 10 one that deploy/deploy.sh pins.
 allowBuilds:
   '@parcel/watcher': true
   esbuild: true
   sharp: true
   workerd: true
+onlyBuiltDependencies:
+  - "@parcel/watcher"
+  - esbuild
+  - sharp
+  - workerd

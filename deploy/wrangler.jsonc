@@ -18,6 +18,14 @@
 	"compatibility_date": "2025-11-28",
 	"compatibility_flags": ["nodejs_compat", "enable_email_sending_queuing"],
 	"workers_dev": true,
+	// The webmail is served here. `custom_domain` makes Cloudflare create the DNS
+	// record and issue the certificate; the zone must be on this account.
+	"routes": [
+		{
+			"pattern": "mail.dharun.dev",
+			"custom_domain": true
+		}
+	],
 	"upload_source_maps": true,
 	"observability": {
 		"enabled": true
