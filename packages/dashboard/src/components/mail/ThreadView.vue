@@ -173,10 +173,10 @@ import ComposerWindow from "@/components/mail/ComposerWindow.vue";
 import DropMenu from "@/components/mail/DropMenu.vue";
 import MailIcon from "@/components/mail/MailIcon.vue";
 import MessageCard from "@/components/mail/MessageCard.vue";
-import type { Contact } from "@/components/mail/RecipientField.vue";
 import { mailApi } from "@/services/mail";
 import { useComposeStore } from "@/stores/compose";
 import { useMailStore } from "@/stores/mail";
+import type { Contact } from "@/types/mail";
 
 const props = defineProps<{
 	addresses: string[];

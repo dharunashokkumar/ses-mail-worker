@@ -12,6 +12,7 @@ import { applyRules, type Rule } from "../mail/rules";
 import { parseSearchQuery } from "../mail/search-query";
 import {
 	addressList,
+	attachmentObjectKey,
 	displayName,
 	htmlToText,
 	previewOf,
@@ -1089,18 +1090,68 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 	}
 
+	/** Addresses stored as a comma-separated column. */
+	static #addresses(value: unknown): string[] {
+		return String(value || "")
+			.split(",")
+			.map((address) => address.trim())
+			.filter(Boolean);
+	}
+
+	/** Base64 for the provider, in chunks so a large file cannot blow the stack. */
+	static #toBase64(bytes: Uint8Array): string {
+		let binary = "";
+		const chunk = 0x8000;
+		for (let i = 0; i < bytes.length; i += chunk) {
+			binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+		}
+		return btoa(binary);
+	}
+
+	/** The files a stored draft carries, read back out of R2 for sending. */
+	async #attachmentsFor(emailId: string) {
+		const rows = this.#exec<Record<string, any>>(
+			"SELECT * FROM attachments WHERE email_id = ?",
+			emailId,
+		);
+		const out = [];
+		for (const row of rows) {
+			const key = row.object_key
+				? String(row.object_key)
+				: attachmentObjectKey(emailId, String(row.id), String(row.filename));
+			const object = await this.env.BUCKET.get(key);
+			if (!object) {
+				// Sending without a file the message says it carries is worse than
+				// failing: the caller marks the send failed so it can be retried.
+				throw new Error(`Attachment ${row.filename} is missing from storage`);
+			}
+			out.push({
+				filename: String(row.filename),
+				type: String(row.mimetype || "application/octet-stream"),
+				content: MailboxDO.#toBase64(
+					new Uint8Array(await object.arrayBuffer()),
+				),
+				disposition: (row.disposition ?? "attachment") as
+					| "attachment"
+					| "inline",
+				contentId: row.content_id ? String(row.content_id) : undefined,
+			});
+		}
+		return out;
+	}
+
 	async #deliverScheduled(row: Record<string, any>) {
 		const { sendOutboundEmail } = await import("../outbound");
-		const recipients = String(row.recipient || "")
-			.split(",")
-			.map((value) => value.trim())
-			.filter(Boolean);
+		const recipients = MailboxDO.#addresses(row.recipient);
 		try {
 			const sent = await sendOutboundEmail(this.env, {
 				from: String(row.sender || ""),
 				to: recipients,
+				cc: MailboxDO.#addresses(row.cc),
+				bcc: MailboxDO.#addresses(row.bcc),
 				subject: String(row.subject || ""),
 				html: String(row.body || ""),
+				attachments: await this.#attachmentsFor(String(row.id)),
 				inReplyTo: row.in_reply_to ? String(row.in_reply_to) : undefined,
 				references: row.email_references
 					? JSON.parse(String(row.email_references))
@@ -1117,6 +1168,11 @@ export class MailboxDO extends DurableObject<Env> {
 				deliveredId,
 				new Date().toISOString(),
 				new Date().toISOString(),
+				String(row.id),
+			);
+			this.ctx.storage.sql.exec(
+				"UPDATE attachments SET email_id = ? WHERE email_id = ?",
+				deliveredId,
 				String(row.id),
 			);
 			this.#unindexEmail(String(row.id));
@@ -1738,7 +1794,7 @@ export class MailboxDO extends DurableObject<Env> {
 		for (const chunk of MailboxDO.#chunk(ids)) {
 			attachments.push(
 				...this.#exec<Record<string, any>>(
-					`SELECT id, email_id, filename FROM attachments WHERE email_id IN (${this.#placeholders(chunk.length)})`,
+					`SELECT id, email_id, filename, object_key FROM attachments WHERE email_id IN (${this.#placeholders(chunk.length)})`,
 					...chunk,
 				),
 			);
@@ -1854,8 +1910,13 @@ export class MailboxDO extends DurableObject<Env> {
 	 */
 	async ingestRaw(raw: ArrayBuffer, fallbackMailbox: string) {
 		const parsed = await new PostalMime().parse(raw);
+		// Email Routing tells us which address this copy was delivered to; the To
+		// header may name someone else entirely on a message with several
+		// recipients, so the envelope wins.
 		const mailbox =
-			parsed.to?.[0]?.address?.toLowerCase() || fallbackMailbox.toLowerCase();
+			fallbackMailbox.toLowerCase() ||
+			parsed.to?.[0]?.address?.toLowerCase() ||
+			"";
 		const headers = headerBag(parsed.headers as any);
 
 		const sender = parsed.from?.address?.toLowerCase() ?? "";
@@ -1887,7 +1948,7 @@ export class MailboxDO extends DurableObject<Env> {
 		for (const attachment of parsed.attachments ?? []) {
 			const attachmentId = crypto.randomUUID();
 			const filename = attachment.filename || "untitled";
-			const key = `attachments/${safeKeySegment(messageId)}/${attachmentId}/${filename}`;
+			const key = attachmentObjectKey(messageId, attachmentId, filename);
 			await this.env.BUCKET.put(key, attachment.content as any);
 			attachmentRows.push({
 				id: attachmentId,
@@ -1900,6 +1961,7 @@ export class MailboxDO extends DurableObject<Env> {
 						: (attachment.content as ArrayBuffer).byteLength,
 				content_id: attachment.contentId || null,
 				disposition: attachment.disposition ?? "attachment",
+				object_key: key,
 			});
 		}
 
@@ -1907,7 +1969,9 @@ export class MailboxDO extends DurableObject<Env> {
 		let body = rawBody;
 		let bodyKey: string | null = null;
 		if (rawBody.length > 96_000) {
-			bodyKey = `bodies/${mailbox}/${safeKeySegment(messageId)}.html`;
+			// A random segment, because sanitising a Message-ID can map two distinct
+			// ids onto the same string and one body would overwrite the other.
+			bodyKey = `bodies/${safeKeySegment(mailbox)}/${crypto.randomUUID()}.html`;
 			await this.env.BUCKET.put(bodyKey, rawBody);
 			body = preview;
 		}
@@ -1957,8 +2021,8 @@ export class MailboxDO extends DurableObject<Env> {
 
 		for (const row of attachmentRows) {
 			this.ctx.storage.sql.exec(
-				`INSERT INTO attachments (id, email_id, filename, mimetype, size, content_id, disposition)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO attachments (id, email_id, filename, mimetype, size, content_id, disposition, object_key)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				row.id,
 				row.email_id,
 				row.filename,
@@ -1966,6 +2030,7 @@ export class MailboxDO extends DurableObject<Env> {
 				row.size,
 				row.content_id,
 				row.disposition,
+				row.object_key,
 			);
 		}
 
@@ -2047,8 +2112,8 @@ export class MailboxDO extends DurableObject<Env> {
 
 		for (const row of input.attachments ?? []) {
 			this.ctx.storage.sql.exec(
-				`INSERT INTO attachments (id, email_id, filename, mimetype, size, content_id, disposition)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO attachments (id, email_id, filename, mimetype, size, content_id, disposition, object_key)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				row.id,
 				input.id,
 				row.filename,
@@ -2056,6 +2121,7 @@ export class MailboxDO extends DurableObject<Env> {
 				row.size,
 				row.content_id ?? null,
 				row.disposition ?? "attachment",
+				row.object_key ?? null,
 			);
 		}
 
@@ -2104,6 +2170,7 @@ export class MailboxDO extends DurableObject<Env> {
 		references?: string[] | null;
 		threadId?: string | null;
 		scheduledAt?: number | null;
+		attachments?: Record<string, any>[];
 	}) {
 		const id = input.id || `draft-${crypto.randomUUID()}`;
 		const body = input.html ?? "";
@@ -2134,6 +2201,45 @@ export class MailboxDO extends DurableObject<Env> {
 			input.scheduledAt ?? null,
 			body.length,
 		);
+		// Attachments are replaced wholesale: the composer sends the full list it
+		// is holding, and the objects it dropped are already in R2.
+		if (input.attachments) {
+			// Each autosave uploads fresh objects, so the ones they replace go too.
+			const keeping = new Set(
+				input.attachments.map((row) => String(row.object_key ?? "")),
+			);
+			for (const row of this.#exec<Record<string, any>>(
+				"SELECT object_key FROM attachments WHERE email_id = ?",
+				id,
+			)) {
+				const key = row.object_key ? String(row.object_key) : "";
+				if (key && !keeping.has(key)) await this.env.BUCKET.delete(key);
+			}
+			this.ctx.storage.sql.exec(
+				"DELETE FROM attachments WHERE email_id = ?",
+				id,
+			);
+			for (const row of input.attachments) {
+				this.ctx.storage.sql.exec(
+					`INSERT INTO attachments (id, email_id, filename, mimetype, size, content_id, disposition, object_key)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					row.id,
+					id,
+					row.filename,
+					row.mimetype,
+					row.size,
+					row.content_id ?? null,
+					row.disposition ?? "attachment",
+					row.object_key ?? null,
+				);
+			}
+			this.ctx.storage.sql.exec(
+				"UPDATE emails SET has_attachments = ? WHERE id = ?",
+				input.attachments.length > 0 ? 1 : 0,
+				id,
+			);
+		}
+
 		this.#indexEmail({
 			id,
 			subject: input.subject ?? "",
@@ -2153,11 +2259,28 @@ export class MailboxDO extends DurableObject<Env> {
 		return row ?? null;
 	}
 
-	async cancelScheduled(id: string) {
+	/** Cancel a scheduled send. Only a scheduled row can be cancelled. */
+	async cancelScheduled(id: string): Promise<boolean> {
+		const row = this.#exec<{ id: string }>(
+			"SELECT id FROM emails WHERE id = ? AND folder_id = 'scheduled' AND scheduled_at IS NOT NULL",
+			id,
+		)[0];
+		if (!row) return false;
 		this.ctx.storage.sql.exec(
 			"UPDATE emails SET scheduled_at = NULL, folder_id = 'drafts' WHERE id = ?",
 			id,
 		);
+		return true;
+	}
+
+	/** Delete a draft. Refuses anything that is not a draft or a scheduled send. */
+	async deleteDraft(id: string): Promise<boolean> {
+		const row = this.#exec<{ id: string }>(
+			"SELECT id FROM emails WHERE id = ? AND folder_id IN ('drafts', 'scheduled')",
+			id,
+		)[0];
+		if (!row) return false;
+		await this.deleteMessages({ ids: [id] });
 		return true;
 	}
 

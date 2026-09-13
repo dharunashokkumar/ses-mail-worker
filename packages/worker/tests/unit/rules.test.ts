@@ -73,3 +73,28 @@ describe("applyRules", () => {
 		expect(actions.folder).toBe("archive");
 	});
 });
+
+describe("malformed rules", () => {
+	it("does not match, and does not throw, on a broken condition list", () => {
+		const broken = rule({ conditions: undefined as any });
+		expect(() => ruleMatches(broken, candidate)).not.toThrow();
+		expect(ruleMatches(broken, candidate)).toBe(false);
+	});
+
+	it("ignores a condition whose value is not text", () => {
+		const broken = rule({
+			conditions: [{ field: "from", operator: "contains", value: 42 as any }],
+		});
+		expect(ruleMatches(broken, candidate)).toBe(false);
+	});
+
+	it("survives a rule list that is not an array", () => {
+		expect(applyRules(undefined as any, candidate).matched).toEqual([]);
+	});
+
+	it("skips a matching rule whose actions are missing", () => {
+		const broken = rule({ actions: null as any });
+		expect(() => applyRules([broken], candidate)).not.toThrow();
+		expect(applyRules([broken], candidate).matched).toEqual([]);
+	});
+});

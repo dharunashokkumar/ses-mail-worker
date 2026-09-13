@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import api from "@/services/api";
+import { clearCachedMail } from "@/services/cache";
 
 export interface User {
 	id: string;
@@ -90,6 +91,7 @@ export const useAuthStore = defineStore("auth", () => {
 			session.value = null;
 			localStorage.removeItem("session");
 			api.clearAuthToken();
+			clearCachedMail();
 			loading.value = false;
 		}
 	}

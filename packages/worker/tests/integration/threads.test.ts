@@ -10,7 +10,7 @@ function buildRawEmail(headers: Record<string, string>, body: string): string {
 	return `${raw}\r\n${body}`;
 }
 
-async function receive(rawEmailStr: string) {
+async function receive(rawEmailStr: string, to?: string) {
 	const worker = await import("../../dev/index");
 	const rawBytes = new TextEncoder().encode(rawEmailStr);
 	const stream = new ReadableStream({
@@ -20,7 +20,7 @@ async function receive(rawEmailStr: string) {
 		},
 	});
 	await worker.default.email(
-		{ raw: stream, rawSize: rawBytes.length },
+		{ raw: stream, rawSize: rawBytes.length, ...(to ? { to } : {}) },
 		env,
 		createExecutionContext(),
 	);
@@ -307,5 +307,83 @@ describe("Threads API", () => {
 		expect(stats.messages).toBe(3);
 		expect(stats.ai.limit).toBe(10000);
 		expect(stats.ai.available).toBe(true);
+	});
+
+	it("files a message by the address it was delivered to, not the first To header", async () => {
+		await receive(
+			buildRawEmail(
+				{
+					From: "sana@meridianlabs.dev",
+					To: `someone-else@example.org, ${mailboxId}`,
+					Subject: "Several recipients",
+					"Message-ID": "<many@meridianlabs.dev>",
+					"Content-Type": "text/plain",
+				},
+				"Sent to a few people.",
+			),
+			mailboxId,
+		);
+
+		const response = await authenticatedFetch(api("/threads?folder=inbox"));
+		const { threads } = await response.json<any>();
+		const received = threads.find((t: any) => t.subject === "Several recipients");
+		expect(received).toBeDefined();
+		expect(received.recipient).toBe(mailboxId);
+	});
+
+	it("refuses to delete a message that is not a draft", async () => {
+		const listed = await authenticatedFetch(api("/threads?folder=inbox"));
+		const threads = (await listed.json<any>()).threads;
+		const target = threads[0];
+
+		const response = await authenticatedFetch(
+			api(`/drafts/${encodeURIComponent(target.id)}`),
+			{ method: "DELETE" },
+		);
+		expect(response.status).toBe(404);
+
+		const after = await authenticatedFetch(api("/threads?folder=inbox"));
+		expect((await after.json<any>()).threads).toHaveLength(threads.length);
+	});
+
+	it("refuses to cancel a schedule on a message that is not scheduled", async () => {
+		const listed = await authenticatedFetch(api("/threads?folder=inbox"));
+		const target = (await listed.json<any>()).threads[0];
+
+		const response = await authenticatedFetch(
+			api(`/drafts/${encodeURIComponent(target.id)}/cancel-schedule`),
+			{ method: "POST" },
+		);
+		expect(response.status).toBe(404);
+
+		const inbox = await authenticatedFetch(api("/threads?folder=inbox"));
+		const still = (await inbox.json<any>()).threads.find(
+			(t: any) => t.id === target.id,
+		);
+		expect(still).toBeDefined();
+	});
+
+	it("deletes a draft it created, and only that", async () => {
+		const saved = await authenticatedFetch(
+			api("/drafts"),
+			json("POST", {
+				from: mailboxId,
+				to: ["priya@kestrelhosting.io"],
+				subject: "A draft",
+				html: "<p>Later.</p>",
+			}),
+		);
+		const { id } = await saved.json<any>();
+
+		const drafts = await authenticatedFetch(api("/threads?folder=drafts"));
+		expect((await drafts.json<any>()).threads).toHaveLength(1);
+
+		const removed = await authenticatedFetch(api(`/drafts/${encodeURIComponent(id)}`), {
+			method: "DELETE",
+		});
+		expect(removed.status).toBe(200);
+
+		const empty = await authenticatedFetch(api("/threads?folder=drafts"));
+		expect((await empty.json<any>()).threads).toHaveLength(0);
 	});
 });

@@ -90,7 +90,14 @@
 					v-for="saved in mail.savedSearches"
 					:key="saved.id"
 					class="nav-item"
-					@click="mail.setScope({ query: saved.query, folder: 'inbox', labelId: null, category: null })"
+					@click="
+						mail.setScope({
+							query: saved.query,
+							folder: 'all',
+							labelId: null,
+							category: null,
+						})
+					"
 				>
 					<MailIcon name="search" :size="16" />
 					<span class="nav-label">{{ saved.name }}</span>

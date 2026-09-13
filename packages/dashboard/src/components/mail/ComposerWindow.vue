@@ -187,14 +187,13 @@ import { EditorContent, useEditor } from "@tiptap/vue-3";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import DropMenu from "@/components/mail/DropMenu.vue";
 import MailIcon from "@/components/mail/MailIcon.vue";
-import RecipientField, {
-	type Contact,
-} from "@/components/mail/RecipientField.vue";
+import RecipientField from "@/components/mail/RecipientField.vue";
 import { mailApi } from "@/services/mail";
 import {
 	type ComposerWindow as Draft,
 	useComposeStore,
 } from "@/stores/compose";
+import type { Contact } from "@/types/mail";
 
 const props = defineProps<{
 	draft: Draft;
@@ -317,8 +316,13 @@ function send() {
 
 async function schedule(at: number) {
 	window.clearTimeout(saveTimer);
-	await compose.schedule(props.draft.uid, at);
-	emit("scheduled", at);
+	try {
+		await compose.schedule(props.draft.uid, at);
+		emit("scheduled", at);
+	} catch (error) {
+		// The window is still open, so nothing written is lost.
+		emit("notify", `Could not schedule: ${(error as Error).message}`);
+	}
 }
 
 function setLink() {
@@ -511,11 +515,13 @@ onBeforeUnmount(() => {
 .send-group {
 	display: inline-flex;
 	border-radius: var(--radius-sm);
-	overflow: hidden;
+	/* No overflow clipping here: the send-later menu opens out of this box. */
 }
-.send-group .send { border-radius: 0; }
+.send-group .send {
+	border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
 .send-group .caret {
-	border-radius: 0;
+	border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 	padding: 8px 9px;
 	border-left: 1px solid color-mix(in srgb, var(--on-accent) 30%, transparent);
 }

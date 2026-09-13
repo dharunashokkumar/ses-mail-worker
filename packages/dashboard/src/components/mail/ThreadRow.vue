@@ -15,7 +15,22 @@
 
 		<div class="lead">
 			<span class="unread-dot" />
-			<AvatarBubble :name="thread.senderName ?? displayName" :email="thread.sender" :size="34" />
+			<button
+				class="pick"
+				:class="{ 'is-picked': selected }"
+				:title="selected ? 'Deselect' : 'Select'"
+				:aria-label="selected ? 'Deselect this conversation' : 'Select this conversation'"
+				:aria-pressed="selected"
+				@click.stop="emit('select', thread)"
+			>
+				<AvatarBubble
+					v-if="!selected"
+					:name="thread.senderName ?? displayName"
+					:email="thread.sender"
+					:size="34"
+				/>
+				<span v-else class="picked"><MailIcon name="check" :size="18" /></span>
+			</button>
 		</div>
 
 		<div class="body">
@@ -71,6 +86,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
 	(event: "open", threadId: string): void;
+	(event: "select", thread: Thread): void;
 	(event: "flag", thread: Thread): void;
 	(event: "swipe", payload: { thread: Thread; action: string }): void;
 }>();
@@ -261,6 +277,24 @@ function onPointerUp() {
 	align-items: center;
 	gap: 8px;
 	padding-top: 2px;
+}
+
+.pick {
+	display: block;
+	padding: 0;
+	border-radius: 50%;
+	line-height: 0;
+}
+.pick:hover { box-shadow: 0 0 0 2px var(--accent); }
+
+.picked {
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	background: var(--accent);
+	color: var(--on-accent);
 }
 
 .unread-dot {

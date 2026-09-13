@@ -7,6 +7,7 @@
  */
 
 import type { Hono } from "hono";
+import { attachmentObjectKey } from "../mail/text";
 import { sendOutboundEmail } from "../outbound";
 import type { Env } from "../types";
 
@@ -32,7 +33,12 @@ interface MailboxStub {
 	mutate(input: Record<string, unknown>): Promise<unknown>;
 	deleteMessages(input: { ids?: string[]; threadIds?: string[] }): Promise<{
 		deleted: number;
-		attachments: Array<{ id: string; email_id: string; filename: string }>;
+		attachments: Array<{
+			id: string;
+			email_id: string;
+			filename: string;
+			object_key?: string | null;
+		}>;
 	}>;
 	getCounts(): Promise<unknown>;
 	getStats(): Promise<unknown>;
@@ -62,7 +68,8 @@ interface MailboxStub {
 	saveDraft(
 		input: Record<string, unknown>,
 	): Promise<{ id: string; scheduledAt: number | null }>;
-	cancelScheduled(id: string): Promise<unknown>;
+	deleteDraft(id: string): Promise<boolean>;
+	cancelScheduled(id: string): Promise<boolean>;
 	recordSent(input: Record<string, unknown>): Promise<unknown>;
 	updateDelivery(
 		messageId: string,
@@ -72,6 +79,38 @@ interface MailboxStub {
 	summarizeThread(threadId: string): Promise<unknown>;
 	rewriteDraft(text: string, tone: string): Promise<unknown>;
 	fetch(request: Request): Promise<Response>;
+}
+
+/**
+ * Put a composer's attachments in R2 and return the rows describing them. Used
+ * by sending, by saving a draft and by scheduling, so a message keeps its files
+ * whichever path it takes.
+ */
+async function uploadAttachments(
+	env: Env,
+	messageId: string,
+	attachments: any[] | undefined,
+): Promise<Record<string, any>[]> {
+	const rows: Record<string, any>[] = [];
+	for (const attachment of attachments ?? []) {
+		const attachmentId = crypto.randomUUID();
+		const filename = String(attachment.filename ?? "attachment");
+		const decoded = atob(String(attachment.content ?? ""));
+		const bytes = new Uint8Array(decoded.length);
+		for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+		const key = attachmentObjectKey(messageId, attachmentId, filename);
+		await env.BUCKET.put(key, bytes);
+		rows.push({
+			id: attachmentId,
+			filename,
+			mimetype: attachment.type ?? "application/octet-stream",
+			size: bytes.byteLength,
+			content_id: attachment.contentId ?? null,
+			disposition: attachment.disposition ?? "attachment",
+			object_key: key,
+		});
+	}
+	return rows;
 }
 
 function stub(env: Env, mailboxId: string): MailboxStub {
@@ -174,11 +213,22 @@ export function registerMailRoutes(app: App) {
 			ids: body.ids,
 			threadIds: body.threadIds,
 		});
-		// Attachment objects go with the messages they belonged to.
+		// Attachment objects go with the messages they belonged to. Rows written
+		// before the key was stored are still at the path this route used to build.
 		for (const attachment of result.attachments) {
 			await c.env.BUCKET.delete(
-				`attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`,
+				attachment.object_key ||
+					attachmentObjectKey(
+						attachment.email_id,
+						attachment.id,
+						attachment.filename,
+					),
 			);
+			if (!attachment.object_key) {
+				await c.env.BUCKET.delete(
+					`attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`,
+				);
+			}
 		}
 		return c.json({ deleted: result.deleted });
 	});
@@ -341,9 +391,13 @@ export function registerMailRoutes(app: App) {
 	app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: any) => {
 		const body = await c.req.json();
 		const mailboxId = c.req.param("mailboxId");
+		const draftId = body.id || `draft-${crypto.randomUUID()}`;
 		return c.json(
 			await stub(c.env, mailboxId).saveDraft({
-				id: body.id,
+				id: draftId,
+				attachments: body.attachments
+					? await uploadAttachments(c.env, draftId, body.attachments)
+					: undefined,
 				from: body.from || mailboxId,
 				to: asArray(body.to),
 				cc: asArray(body.cc),
@@ -359,19 +413,24 @@ export function registerMailRoutes(app: App) {
 	});
 
 	app.delete("/api/v1/mailboxes/:mailboxId/drafts/:id", async (c: any) => {
-		await stub(c.env, c.req.param("mailboxId")).deleteMessages({
-			ids: [c.req.param("id")],
-		});
-		return c.json({ status: "deleted" });
+		const deleted = await stub(c.env, c.req.param("mailboxId")).deleteDraft(
+			c.req.param("id"),
+		);
+		return deleted
+			? c.json({ status: "deleted" })
+			: c.json({ error: "No such draft" }, 404);
 	});
 
 	app.post(
 		"/api/v1/mailboxes/:mailboxId/drafts/:id/cancel-schedule",
 		async (c: any) => {
-			await stub(c.env, c.req.param("mailboxId")).cancelScheduled(
-				c.req.param("id"),
-			);
-			return c.json({ status: "cancelled" });
+			const cancelled = await stub(
+				c.env,
+				c.req.param("mailboxId"),
+			).cancelScheduled(c.req.param("id"));
+			return cancelled
+				? c.json({ status: "cancelled" })
+				: c.json({ error: "No such scheduled message" }, 404);
 		},
 	);
 
@@ -402,8 +461,10 @@ export function registerMailRoutes(app: App) {
 
 		// Scheduled mail is stored and sent later by the Durable Object's alarm.
 		if (body.scheduledAt) {
+			const draftId = body.draftId || `draft-${crypto.randomUUID()}`;
 			const draft = await mailbox.saveDraft({
-				id: body.draftId,
+				id: draftId,
+				attachments: await uploadAttachments(c.env, draftId, body.attachments),
 				from,
 				to,
 				cc,
@@ -425,7 +486,9 @@ export function registerMailRoutes(app: App) {
 		try {
 			sent = await sendOutboundEmail(c.env, {
 				from,
-				to: [...to, ...cc, ...bcc],
+				to,
+				cc,
+				bcc,
 				subject,
 				html,
 				text,
@@ -439,47 +502,44 @@ export function registerMailRoutes(app: App) {
 
 		const messageId = sent.messageId ?? crypto.randomUUID();
 
-		const attachmentRows = [];
-		for (const attachment of body.attachments ?? []) {
-			const attachmentId = crypto.randomUUID();
-			const decoded = atob(String(attachment.content ?? ""));
-			const bytes = new Uint8Array(decoded.length);
-			for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
-			await c.env.BUCKET.put(
-				`attachments/${messageId}/${attachmentId}/${attachment.filename}`,
-				bytes,
+		// The message has left. Everything below is bookkeeping: if it fails the send
+		// still happened, so report success with a warning rather than an error the
+		// client's outbox would retry — that would deliver the message twice.
+		let warning: string | null = null;
+		try {
+			const attachmentRows = await uploadAttachments(
+				c.env,
+				messageId,
+				body.attachments,
 			);
-			attachmentRows.push({
-				id: attachmentId,
-				filename: attachment.filename,
-				mimetype: attachment.type ?? "application/octet-stream",
-				size: bytes.byteLength,
-				content_id: attachment.contentId ?? null,
-				disposition: attachment.disposition ?? "attachment",
+
+			await mailbox.recordSent({
+				id: messageId,
+				from,
+				to,
+				cc,
+				bcc,
+				subject,
+				html,
+				text,
+				inReplyTo: body.inReplyTo ?? null,
+				references: body.references ?? null,
+				threadId: body.threadId ?? null,
+				attachments: attachmentRows,
+				remindAt: body.remindAt ?? null,
 			});
+
+			if (body.draftId) {
+				await mailbox.deleteDraft(String(body.draftId));
+			}
+		} catch (error) {
+			warning = `Sent, but saving the copy failed: ${(error as Error).message}`;
 		}
 
-		await mailbox.recordSent({
-			id: messageId,
-			from,
-			to,
-			cc,
-			bcc,
-			subject,
-			html,
-			text,
-			inReplyTo: body.inReplyTo ?? null,
-			references: body.references ?? null,
-			threadId: body.threadId ?? null,
-			attachments: attachmentRows,
-			remindAt: body.remindAt ?? null,
-		});
-
-		if (body.draftId) {
-			await mailbox.deleteMessages({ ids: [String(body.draftId)] });
-		}
-
-		return c.json({ id: messageId, status: "sent" }, 201);
+		return c.json(
+			{ id: messageId, status: "sent", ...(warning ? { warning } : {}) },
+			201,
+		);
 	});
 
 	// --- one-click unsubscribe --------------------------------------------------
@@ -583,6 +643,13 @@ export function registerMailRoutes(app: App) {
 	});
 
 	app.post("/api/v1/addresses", async (c: any) => {
+		// Creating an address writes an Email Routing rule for the whole domain, so
+		// it takes an administrator — never an unauthenticated caller, even where
+		// the built-in auth is switched off.
+		const session = c.get("session");
+		if (!session?.isAdmin) {
+			return c.json({ error: "Only an administrator can add an address" }, 403);
+		}
 		const { CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, MAIL_DOMAIN } = c.env;
 		if (!CLOUDFLARE_API_TOKEN || !CLOUDFLARE_ZONE_ID || !MAIL_DOMAIN) {
 			return c.json(

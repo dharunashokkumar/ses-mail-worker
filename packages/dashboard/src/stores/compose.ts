@@ -18,6 +18,8 @@ export interface ComposerWindow extends Draft {
 export interface PendingSend {
 	uid: string;
 	draft: ComposerWindow;
+	/** The mailbox this was written in: it may not be the open one by the time it sends. */
+	mailboxId: string;
 	sendAt: number;
 	timer: number;
 }
@@ -214,6 +216,7 @@ export const useComposeStore = defineStore("compose", {
 					bcc: window.bcc,
 					subject: window.subject,
 					html: window.html,
+					attachments: window.attachments.map(({ size, ...rest }) => rest),
 					inReplyTo: window.inReplyTo,
 					references: window.references,
 					threadId: window.threadId,
@@ -240,6 +243,7 @@ export const useComposeStore = defineStore("compose", {
 			const pending: PendingSend = {
 				uid: window.uid,
 				draft: window,
+				mailboxId: this.mailboxId,
 				sendAt: Date.now() + seconds * 1000,
 				timer: 0,
 			};
@@ -264,6 +268,8 @@ export const useComposeStore = defineStore("compose", {
 			if (index === -1) return;
 			const [pending] = this.pending.splice(index, 1);
 			const draft = pending.draft;
+			// Switching mailboxes during the undo window must not redirect the send.
+			const mailboxId = pending.mailboxId;
 
 			const payload: Record<string, any> = {
 				from: draft.from,
@@ -281,19 +287,19 @@ export const useComposeStore = defineStore("compose", {
 			};
 
 			try {
-				await mailApi.send(this.mailboxId, payload);
+				await mailApi.send(mailboxId, payload);
 			} catch (error) {
 				// Offline or a provider hiccup: hold it in the outbox and retry.
-				this.outbox.push({ mailboxId: this.mailboxId, payload });
+				this.outbox.push({ mailboxId, payload });
 				saveOutbox(this.outbox);
 				this.lastError = (error as Error).message;
 			}
 		},
 
+		/** Schedule a send. The window stays open until the server has it. */
 		async schedule(uid: string, at: number) {
 			const window = this.windows.find((item) => item.uid === uid);
 			if (!window) return;
-			this.windows = this.windows.filter((item) => item.uid !== uid);
 			await mailApi.send(this.mailboxId, {
 				from: window.from,
 				to: window.to,
@@ -301,12 +307,14 @@ export const useComposeStore = defineStore("compose", {
 				bcc: window.bcc,
 				subject: window.subject,
 				html: window.html,
+				attachments: window.attachments.map(({ size, ...rest }) => rest),
 				inReplyTo: window.inReplyTo,
 				references: window.references,
 				threadId: window.threadId,
 				draftId: window.id || undefined,
 				scheduledAt: at,
 			});
+			this.windows = this.windows.filter((item) => item.uid !== uid);
 		},
 
 		/** Retry anything written while offline. */

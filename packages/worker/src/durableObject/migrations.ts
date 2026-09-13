@@ -169,6 +169,39 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN sender_name TEXT;
         `,
 	},
+	{
+		name: "6_attachment_keys_and_system_folders",
+		sql: `
+            ALTER TABLE attachments ADD COLUMN object_key TEXT;
+
+            UPDATE emails SET folder_id = (
+                    SELECT f.id || '-user-' || f.rowid FROM folders f
+                    WHERE f.id = emails.folder_id AND f.is_deletable = 1
+                      AND f.id IN ('drafts', 'snoozed', 'scheduled')
+                )
+                WHERE folder_id IN (
+                    SELECT id FROM folders
+                    WHERE id IN ('drafts', 'snoozed', 'scheduled') AND is_deletable = 1
+                );
+            UPDATE emails SET return_folder = (
+                    SELECT f.id || '-user-' || f.rowid FROM folders f
+                    WHERE f.id = emails.return_folder AND f.is_deletable = 1
+                      AND f.id IN ('drafts', 'snoozed', 'scheduled')
+                )
+                WHERE return_folder IN (
+                    SELECT id FROM folders
+                    WHERE id IN ('drafts', 'snoozed', 'scheduled') AND is_deletable = 1
+                );
+            UPDATE folders
+                SET id = id || '-user-' || rowid,
+                    name = name || ' (yours ' || rowid || ')'
+                WHERE id IN ('drafts', 'snoozed', 'scheduled') AND is_deletable = 1;
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('drafts', 'Drafts', 0),
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+        `,
+	},
 ];
 
 export const authMigrations: Migration[] = [

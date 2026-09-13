@@ -13,6 +13,10 @@ export type OutboundAttachment = {
 export type OutboundEmail = {
 	from: string;
 	to: string | string[];
+	/** Recipients that belong in the Cc header. */
+	cc?: string[];
+	/** Recipients nobody else should see. */
+	bcc?: string[];
 	subject: string;
 	text?: string;
 	html?: string;
@@ -37,7 +41,11 @@ export type SesAttachment = {
 /** SES API v2 SendEmail with Simple content: SES assembles and encodes the MIME itself. */
 export type SesSendEmailRequest = {
 	FromEmailAddress: string;
-	Destination: { ToAddresses: string[] };
+	Destination: {
+		ToAddresses: string[];
+		CcAddresses?: string[];
+		BccAddresses?: string[];
+	};
 	Content: {
 		Simple: {
 			Subject: SesText;
@@ -114,11 +122,18 @@ export function buildSesSendEmailRequest(
 		},
 	);
 
+	const cc = message.cc?.filter(Boolean) ?? [];
+	const bcc = message.bcc?.filter(Boolean) ?? [];
+
 	return {
 		FromEmailAddress: message.from,
-		// Every recipient goes in the envelope, unlike the send_email binding's single address.
+		// Every recipient goes in the envelope, unlike the send_email binding's single
+		// address — but each in its own list, so SES writes a Cc header and leaves Bcc
+		// recipients out of the headers entirely.
 		Destination: {
 			ToAddresses: Array.isArray(message.to) ? message.to : [message.to],
+			...(cc.length ? { CcAddresses: cc } : {}),
+			...(bcc.length ? { BccAddresses: bcc } : {}),
 		},
 		Content: {
 			Simple: {

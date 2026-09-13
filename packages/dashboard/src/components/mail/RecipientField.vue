@@ -45,11 +45,7 @@
 import { ref } from "vue";
 import AvatarBubble from "@/components/mail/AvatarBubble.vue";
 import MailIcon from "@/components/mail/MailIcon.vue";
-
-export interface Contact {
-	name: string;
-	email: string;
-}
+import type { Contact } from "@/types/mail";
 
 const props = withDefaults(
 	defineProps<{

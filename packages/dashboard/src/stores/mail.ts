@@ -8,6 +8,7 @@
  */
 
 import { defineStore } from "pinia";
+import { CACHE_PREFIX, clearCachedMail } from "@/services/cache";
 import { type MutateInput, mailApi } from "@/services/mail";
 import type {
 	Counts,
@@ -25,7 +26,6 @@ export interface Scope {
 	query: string;
 }
 
-const CACHE_PREFIX = "mail:cache:";
 const CACHE_LIMIT = 40;
 
 function cacheGet<T>(key: string): T | null {
@@ -81,6 +81,9 @@ export const useMailStore = defineStore("mail", {
 		conversations: true,
 		socket: null as WebSocket | null,
 		socketRetry: 0,
+		/** Bumped whenever the scope or mailbox changes, so slow replies can be dropped. */
+		requestToken: 0,
+		pendingMutations: [] as Array<{ mailboxId: string; input: MutateInput }>,
 	}),
 
 	getters: {
@@ -113,7 +116,16 @@ export const useMailStore = defineStore("mail", {
 
 	actions: {
 		async bootstrap(mailboxId: string) {
+			// Nothing from the previous mailbox may survive into this one — including
+			// anything the service worker cached for a different signed-in account.
+			if (this.mailboxId && this.mailboxId !== mailboxId) clearCachedMail();
 			this.mailboxId = mailboxId;
+			this.openThreadId = "";
+			this.thread = null;
+			this.summary = null;
+			this.selection = [];
+			this.page = 1;
+			this.hasMore = false;
 			this.threads = cacheGet<Thread[]>(`${mailboxId}:inbox`) ?? [];
 			await Promise.all([
 				this.loadCounts(),
@@ -126,7 +138,18 @@ export const useMailStore = defineStore("mail", {
 
 		async loadIdentity() {
 			try {
-				this.identity = await mailApi.identity();
+				const identity = await mailApi.identity();
+				// A different person signing in on this browser must not read the
+				// last one's cached mail, even into the same mailbox.
+				const previous = localStorage.getItem("mail:identity");
+				const current = identity.email ?? "";
+				if (previous !== null && previous !== current) clearCachedMail();
+				try {
+					localStorage.setItem("mail:identity", current);
+				} catch {
+					// storage blocked: the cache is per-session anyway
+				}
+				this.identity = identity;
 			} catch {
 				this.identity = null;
 			}
@@ -153,6 +176,8 @@ export const useMailStore = defineStore("mail", {
 			if (append) this.loadingMore = true;
 			else this.loading = true;
 			this.error = "";
+			const token = ++this.requestToken;
+			const cacheKey = this.cacheKey();
 
 			try {
 				const result = await mailApi.threads(this.mailboxId, {
@@ -173,7 +198,8 @@ export const useMailStore = defineStore("mail", {
 				if (!append)
 					cacheSet(this.cacheKey(), result.threads.slice(0, CACHE_LIMIT));
 			} catch (error) {
-				const cached = cacheGet<Thread[]>(this.cacheKey());
+				if (token !== this.requestToken) return;
+				const cached = cacheGet<Thread[]>(cacheKey);
 				if (cached) {
 					this.threads = cached;
 					this.offline = true;
@@ -181,8 +207,10 @@ export const useMailStore = defineStore("mail", {
 					this.error = (error as Error).message;
 				}
 			} finally {
-				this.loading = false;
-				this.loadingMore = false;
+				if (token === this.requestToken) {
+					this.loading = false;
+					this.loadingMore = false;
+				}
 			}
 		},
 
@@ -228,6 +256,9 @@ export const useMailStore = defineStore("mail", {
 		},
 
 		setScope(scope: Partial<Scope>) {
+			// A label or a category spans the whole mailbox: staying inside the
+			// current folder would show only the mail that is in both.
+			if (scope.labelId || scope.category) scope = { folder: "all", ...scope };
 			this.scope = { ...this.scope, ...scope };
 			this.openThreadId = "";
 			this.thread = null;
@@ -239,17 +270,23 @@ export const useMailStore = defineStore("mail", {
 			this.openThreadId = threadId;
 			this.summary = null;
 			this.threadLoading = true;
-			const cached = cacheGet<ThreadDetail>(`${this.mailboxId}:t:${threadId}`);
+			const mailboxId = this.mailboxId;
+			const cached = cacheGet<ThreadDetail>(`${mailboxId}:t:${threadId}`);
 			if (cached) this.thread = cached;
 			try {
-				this.thread = await mailApi.thread(this.mailboxId, threadId);
-				cacheSet(`${this.mailboxId}:t:${threadId}`, this.thread);
+				const detail = await mailApi.thread(mailboxId, threadId);
+				cacheSet(`${mailboxId}:t:${threadId}`, detail);
+				// Another conversation was opened while this one loaded.
+				if (this.openThreadId !== threadId || this.mailboxId !== mailboxId)
+					return;
+				this.thread = detail;
 				this.offline = false;
 			} catch (error) {
+				if (this.openThreadId !== threadId) return;
 				if (!cached) this.error = (error as Error).message;
 				else this.offline = true;
 			} finally {
-				this.threadLoading = false;
+				if (this.openThreadId === threadId) this.threadLoading = false;
 			}
 
 			const thread = this.threads.find((t) => t.threadId === threadId);
@@ -301,7 +338,33 @@ export const useMailStore = defineStore("mail", {
 				await mailApi.mutate(this.mailboxId, input);
 				if (!options.silent) await this.loadCounts();
 			} catch (error) {
+				// Offline: keep the change and replay it when the network returns,
+				// rather than throwing away what the list already shows.
+				if (!navigator.onLine) {
+					this.pendingMutations.push({ mailboxId: this.mailboxId, input });
+					this.offline = true;
+					return;
+				}
 				this.error = (error as Error).message;
+				await this.loadThreads();
+			}
+		},
+
+		/** Replay anything that could not be saved while offline. */
+		async drainMutations() {
+			if (this.pendingMutations.length === 0) return;
+			const queued = [...this.pendingMutations];
+			this.pendingMutations = [];
+			for (const entry of queued) {
+				try {
+					await mailApi.mutate(entry.mailboxId, entry.input);
+				} catch {
+					this.pendingMutations.push(entry);
+				}
+			}
+			if (this.pendingMutations.length === 0) {
+				this.offline = false;
+				await this.loadCounts();
 				await this.loadThreads();
 			}
 		},

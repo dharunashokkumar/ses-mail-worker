@@ -241,7 +241,13 @@ const commands = computed<Command[]>(() => {
 			hint: saved.query,
 			group: "Search",
 			icon: "search",
-			run: () => mail.setScope({ query: saved.query }),
+			run: () =>
+				mail.setScope({
+					query: saved.query,
+					folder: "all",
+					labelId: null,
+					category: null,
+				}),
 		});
 	}
 
@@ -262,7 +268,13 @@ const results = computed<Command[]>(() => {
 		title: `Search mail for “${query.value.trim()}”`,
 		group: "Search",
 		icon: "search",
-		run: () => mail.setScope({ query: query.value.trim() }),
+		run: () =>
+			mail.setScope({
+				query: query.value.trim(),
+				folder: "all",
+				labelId: null,
+				category: null,
+			}),
 	});
 	return matches.slice(0, 14);
 });

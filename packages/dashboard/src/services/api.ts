@@ -1,4 +1,5 @@
 import axios from "axios";
+import { clearCachedMail } from "@/services/cache";
 
 const apiClient = axios.create({
 	baseURL: "",
@@ -31,6 +32,8 @@ apiClient.interceptors.response.use(
 		if (error.response?.status === 401) {
 			// Clear auth and redirect to login
 			localStorage.removeItem("session");
+			// The session is over, so cached mail from it goes as well.
+			clearCachedMail();
 			if (window.location.pathname !== "/login") {
 				window.location.href = "/login";
 			}
