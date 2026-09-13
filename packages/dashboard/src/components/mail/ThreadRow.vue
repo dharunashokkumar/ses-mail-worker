@@ -19,6 +19,7 @@
 				class="pick"
 				:class="{ 'is-picked': selected }"
 				:title="selected ? 'Deselect' : 'Select'"
+				:aria-label="selected ? 'Deselect this conversation' : 'Select this conversation'"
 				:aria-pressed="selected"
 				@click.stop="emit('select', thread)"
 			>
@@ -280,6 +281,7 @@ function onPointerUp() {
 
 .pick {
 	display: block;
+	padding: 0;
 	border-radius: 50%;
 	line-height: 0;
 }

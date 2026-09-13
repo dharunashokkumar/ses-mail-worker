@@ -91,4 +91,10 @@ describe("malformed rules", () => {
 	it("survives a rule list that is not an array", () => {
 		expect(applyRules(undefined as any, candidate).matched).toEqual([]);
 	});
+
+	it("skips a matching rule whose actions are missing", () => {
+		const broken = rule({ actions: null as any });
+		expect(() => applyRules([broken], candidate)).not.toThrow();
+		expect(applyRules([broken], candidate).matched).toEqual([]);
+	});
 });

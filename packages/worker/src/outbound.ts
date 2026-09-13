@@ -38,16 +38,22 @@ export async function sendOutboundEmail(
 		return sendWithSes(env, message);
 	}
 
-	// The binding takes a single envelope recipient.
+	// The binding takes a single envelope recipient, so every address — To, Cc
+	// and Bcc alike — gets its own copy. Bcc addresses stay out of the headers,
+	// so the copies look the way they should.
 	const recipients = [
 		...(Array.isArray(message.to) ? message.to : [message.to]),
 		...(message.cc ?? []),
 		...(message.bcc ?? []),
-	].filter(Boolean);
-	const to = recipients[0];
-	await env.SEND_EMAIL.send(
-		new EmailMessage(message.from, to, buildMimeMessage(message)),
-	);
+	]
+		.map((address) => address?.trim())
+		.filter(Boolean);
+	if (recipients.length === 0) throw new Error("No recipient to send to");
+
+	const mime = buildMimeMessage(message);
+	for (const recipient of recipients) {
+		await env.SEND_EMAIL.send(new EmailMessage(message.from, recipient, mime));
+	}
 	return { messageId: null };
 }
 

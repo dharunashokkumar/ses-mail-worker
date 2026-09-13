@@ -33,7 +33,12 @@ interface MailboxStub {
 	mutate(input: Record<string, unknown>): Promise<unknown>;
 	deleteMessages(input: { ids?: string[]; threadIds?: string[] }): Promise<{
 		deleted: number;
-		attachments: Array<{ id: string; email_id: string; filename: string }>;
+		attachments: Array<{
+			id: string;
+			email_id: string;
+			filename: string;
+			object_key?: string | null;
+		}>;
 	}>;
 	getCounts(): Promise<unknown>;
 	getStats(): Promise<unknown>;
@@ -208,11 +213,22 @@ export function registerMailRoutes(app: App) {
 			ids: body.ids,
 			threadIds: body.threadIds,
 		});
-		// Attachment objects go with the messages they belonged to.
+		// Attachment objects go with the messages they belonged to. Rows written
+		// before the key was stored are still at the path this route used to build.
 		for (const attachment of result.attachments) {
 			await c.env.BUCKET.delete(
-				`attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`,
+				attachment.object_key ||
+					attachmentObjectKey(
+						attachment.email_id,
+						attachment.id,
+						attachment.filename,
+					),
 			);
+			if (!attachment.object_key) {
+				await c.env.BUCKET.delete(
+					`attachments/${attachment.email_id}/${attachment.id}/${attachment.filename}`,
+				);
+			}
 		}
 		return c.json({ deleted: result.deleted });
 	});

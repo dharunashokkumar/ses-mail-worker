@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import api from "@/services/api";
+import { clearCachedMail } from "@/services/cache";
 
 export interface User {
 	id: string;
@@ -90,13 +91,7 @@ export const useAuthStore = defineStore("auth", () => {
 			session.value = null;
 			localStorage.removeItem("session");
 			api.clearAuthToken();
-			// Cached mail belongs to the account that was signed in.
-			navigator.serviceWorker?.controller?.postMessage({
-				type: "clear-api-cache",
-			});
-			for (const key of Object.keys(localStorage)) {
-				if (key.startsWith("mail:cache:")) localStorage.removeItem(key);
-			}
+			clearCachedMail();
 			loading.value = false;
 		}
 	}

@@ -3,6 +3,7 @@
  * Durable Object do the work, the dashboard just renders what comes back.
  */
 
+import { clearCachedMail } from "@/services/cache";
 import type {
 	Counts,
 	Identity,
@@ -58,6 +59,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 		// reload sends the browser back through Access rather than to a login
 		// form this deployment may not even have.
 		localStorage.removeItem("session");
+		clearCachedMail();
 		if (!window.location.pathname.startsWith("/login")) {
 			window.location.reload();
 		}

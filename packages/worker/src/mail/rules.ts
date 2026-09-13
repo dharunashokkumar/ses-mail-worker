@@ -94,6 +94,8 @@ export function applyRules(
 
 	for (const rule of ordered) {
 		if (!ruleMatches(rule, candidate)) continue;
+		// A stored rule can carry null actions; it matches nothing useful.
+		if (!rule.actions || typeof rule.actions !== "object") continue;
 		merged.matched.push(rule.id);
 		const { actions } = rule;
 		if (actions.folder) merged.folder = actions.folder;

@@ -21,6 +21,14 @@ interface MimeMessageOptions {
 	references?: string[];
 }
 
+/**
+ * A header value may not contain CR or LF: one would end the header and let a
+ * recipient address inject headers of its own.
+ */
+function headerValue(value: string): string {
+	return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 export function buildMimeMessage(options: MimeMessageOptions): string {
 	const {
 		from,
@@ -38,25 +46,25 @@ export function buildMimeMessage(options: MimeMessageOptions): string {
 	const altBoundary = `----=_Alt_${Date.now()}_${Math.random().toString(36).substring(2)}`;
 
 	// Convert to to string if it's an array
-	const toStr = Array.isArray(to) ? to.join(", ") : to;
+	const toStr = headerValue(Array.isArray(to) ? to.join(", ") : to);
 
 	let mime = "";
 
 	// Headers
-	mime += `From: ${from}\r\n`;
+	mime += `From: ${headerValue(from)}\r\n`;
 	mime += `To: ${toStr}\r\n`;
-	if (cc && cc.length > 0) mime += `Cc: ${cc.join(", ")}\r\n`;
-	mime += `Subject: ${subject}\r\n`;
+	if (cc && cc.length > 0) mime += `Cc: ${headerValue(cc.join(", "))}\r\n`;
+	mime += `Subject: ${headerValue(subject)}\r\n`;
 	mime += `MIME-Version: 1.0\r\n`;
 	mime += `Date: ${new Date().toUTCString()}\r\n`;
 	mime += `Message-ID: <${crypto.randomUUID()}@cloudflare.workers.dev>\r\n`;
 
 	// Threading headers
 	if (inReplyTo) {
-		mime += `In-Reply-To: <${inReplyTo}>\r\n`;
+		mime += `In-Reply-To: <${headerValue(inReplyTo)}>\r\n`;
 	}
 	if (references && references.length > 0) {
-		const refs = references.map((ref) => `<${ref}>`).join(" ");
+		const refs = references.map((ref) => `<${headerValue(ref)}>`).join(" ");
 		mime += `References: ${refs}\r\n`;
 	}
 

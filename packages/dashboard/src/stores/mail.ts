@@ -8,6 +8,7 @@
  */
 
 import { defineStore } from "pinia";
+import { CACHE_PREFIX, clearCachedMail } from "@/services/cache";
 import { type MutateInput, mailApi } from "@/services/mail";
 import type {
 	Counts,
@@ -25,20 +26,7 @@ export interface Scope {
 	query: string;
 }
 
-const CACHE_PREFIX = "mail:cache:";
 const CACHE_LIMIT = 40;
-
-/** Ask the service worker to forget API answers cached for another identity. */
-function clearApiCache() {
-	navigator.serviceWorker?.controller?.postMessage({ type: "clear-api-cache" });
-	try {
-		for (const key of Object.keys(localStorage)) {
-			if (key.startsWith(CACHE_PREFIX)) localStorage.removeItem(key);
-		}
-	} catch {
-		// storage blocked: there is nothing cached to clear
-	}
-}
 
 function cacheGet<T>(key: string): T | null {
 	try {
@@ -95,7 +83,7 @@ export const useMailStore = defineStore("mail", {
 		socketRetry: 0,
 		/** Bumped whenever the scope or mailbox changes, so slow replies can be dropped. */
 		requestToken: 0,
-		pendingMutations: [] as MutateInput[],
+		pendingMutations: [] as Array<{ mailboxId: string; input: MutateInput }>,
 	}),
 
 	getters: {
@@ -130,7 +118,7 @@ export const useMailStore = defineStore("mail", {
 		async bootstrap(mailboxId: string) {
 			// Nothing from the previous mailbox may survive into this one — including
 			// anything the service worker cached for a different signed-in account.
-			if (this.mailboxId && this.mailboxId !== mailboxId) clearApiCache();
+			if (this.mailboxId && this.mailboxId !== mailboxId) clearCachedMail();
 			this.mailboxId = mailboxId;
 			this.openThreadId = "";
 			this.thread = null;
@@ -150,7 +138,18 @@ export const useMailStore = defineStore("mail", {
 
 		async loadIdentity() {
 			try {
-				this.identity = await mailApi.identity();
+				const identity = await mailApi.identity();
+				// A different person signing in on this browser must not read the
+				// last one's cached mail, even into the same mailbox.
+				const previous = localStorage.getItem("mail:identity");
+				const current = identity.email ?? "";
+				if (previous !== null && previous !== current) clearCachedMail();
+				try {
+					localStorage.setItem("mail:identity", current);
+				} catch {
+					// storage blocked: the cache is per-session anyway
+				}
+				this.identity = identity;
 			} catch {
 				this.identity = null;
 			}
@@ -342,7 +341,7 @@ export const useMailStore = defineStore("mail", {
 				// Offline: keep the change and replay it when the network returns,
 				// rather than throwing away what the list already shows.
 				if (!navigator.onLine) {
-					this.pendingMutations.push(input);
+					this.pendingMutations.push({ mailboxId: this.mailboxId, input });
 					this.offline = true;
 					return;
 				}
@@ -356,11 +355,11 @@ export const useMailStore = defineStore("mail", {
 			if (this.pendingMutations.length === 0) return;
 			const queued = [...this.pendingMutations];
 			this.pendingMutations = [];
-			for (const input of queued) {
+			for (const entry of queued) {
 				try {
-					await mailApi.mutate(this.mailboxId, input);
+					await mailApi.mutate(entry.mailboxId, entry.input);
 				} catch {
-					this.pendingMutations.push(input);
+					this.pendingMutations.push(entry);
 				}
 			}
 			if (this.pendingMutations.length === 0) {

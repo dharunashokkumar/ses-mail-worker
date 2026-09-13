@@ -1120,7 +1120,11 @@ export class MailboxDO extends DurableObject<Env> {
 				? String(row.object_key)
 				: attachmentObjectKey(emailId, String(row.id), String(row.filename));
 			const object = await this.env.BUCKET.get(key);
-			if (!object) continue;
+			if (!object) {
+				// Sending without a file the message says it carries is worse than
+				// failing: the caller marks the send failed so it can be retried.
+				throw new Error(`Attachment ${row.filename} is missing from storage`);
+			}
 			out.push({
 				filename: String(row.filename),
 				type: String(row.mimetype || "application/octet-stream"),
@@ -1790,7 +1794,7 @@ export class MailboxDO extends DurableObject<Env> {
 		for (const chunk of MailboxDO.#chunk(ids)) {
 			attachments.push(
 				...this.#exec<Record<string, any>>(
-					`SELECT id, email_id, filename FROM attachments WHERE email_id IN (${this.#placeholders(chunk.length)})`,
+					`SELECT id, email_id, filename, object_key FROM attachments WHERE email_id IN (${this.#placeholders(chunk.length)})`,
 					...chunk,
 				),
 			);
@@ -2200,6 +2204,17 @@ export class MailboxDO extends DurableObject<Env> {
 		// Attachments are replaced wholesale: the composer sends the full list it
 		// is holding, and the objects it dropped are already in R2.
 		if (input.attachments) {
+			// Each autosave uploads fresh objects, so the ones they replace go too.
+			const keeping = new Set(
+				input.attachments.map((row) => String(row.object_key ?? "")),
+			);
+			for (const row of this.#exec<Record<string, any>>(
+				"SELECT object_key FROM attachments WHERE email_id = ?",
+				id,
+			)) {
+				const key = row.object_key ? String(row.object_key) : "";
+				if (key && !keeping.has(key)) await this.env.BUCKET.delete(key);
+			}
 			this.ctx.storage.sql.exec(
 				"DELETE FROM attachments WHERE email_id = ?",
 				id,

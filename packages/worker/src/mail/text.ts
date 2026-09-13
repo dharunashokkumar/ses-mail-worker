@@ -55,7 +55,7 @@ export function attachmentObjectKey(
 	attachmentId: string,
 	filename: string,
 ): string {
-	return `attachments/${safeKeySegment(messageId)}/${attachmentId}/${safeKeySegment(filename) || "untitled"}`;
+	return `attachments/${safeKeySegment(messageId)}/${safeKeySegment(attachmentId)}/${safeKeySegment(filename) || "untitled"}`;
 }
 
 /** Display name for an address, falling back to the local part. */

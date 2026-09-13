@@ -11,6 +11,10 @@ const ASSET_CACHE = "mail-assets-v1";
 const API_CACHE = "mail-api-v1";
 const SHELL_URLS = ["/", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest"];
 
+// Bumped when the signed-in identity changes. A response fetched before the
+// bump must not be written afterwards, or it would outlive the cache clear.
+let apiGeneration = 0;
+
 self.addEventListener("install", (event) => {
 	event.waitUntil(
 		caches
@@ -46,9 +50,12 @@ async function cacheFirst(request, cacheName) {
 
 async function networkFirst(request, cacheName, fallback) {
 	const cache = await caches.open(cacheName);
+	const generation = apiGeneration;
 	try {
 		const response = await fetch(request);
-		if (response.ok) cache.put(request, response.clone());
+		if (response.ok && (cacheName !== API_CACHE || generation === apiGeneration)) {
+			cache.put(request, response.clone());
+		}
 		return response;
 	} catch (error) {
 		const hit = await cache.match(request);
@@ -66,6 +73,7 @@ async function networkFirst(request, cacheName, fallback) {
 // API answers belong to whoever was signed in when they were stored.
 self.addEventListener("message", (event) => {
 	if (event.data?.type === "clear-api-cache") {
+		apiGeneration += 1;
 		event.waitUntil(caches.delete(API_CACHE));
 	}
 });

@@ -27,7 +27,9 @@
 		<Transition name="fade">
 			<div v-if="mail.selection.length" class="bulkbar">
 				<span>{{ mail.selection.length }} selected</span>
-				<button class="chip chip-button" @click="selectAll">All</button>
+				<button class="chip chip-button" @click="selectAll">
+					{{ mail.hasMore ? "Select all loaded" : "Select all" }}
+				</button>
 				<span class="spacer" />
 				<button class="icon-btn" title="Archive" @click="bulk('archive')">
 					<MailIcon name="archive" :size="16" />
@@ -125,6 +127,7 @@ function flag(thread: Thread) {
 	void mail.mutate({ threadIds: [thread.threadId], starred: !thread.starred });
 }
 
+/** Selects what is loaded: older pages are not in the list yet. */
 function selectAll() {
 	for (const thread of mail.threads) {
 		if (!mail.selection.includes(thread.threadId)) {

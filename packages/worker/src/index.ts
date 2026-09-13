@@ -1788,6 +1788,7 @@ export function EmailExplorer(_options: EmailExplorerOptions = {}) {
 
 				// Middleware to check mailbox access for non-admin users
 				const WRITE_ROLES = ["owner", "admin", "write"];
+				const SAFE_METHODS = ["GET", "HEAD", "OPTIONS"];
 				const checkMailboxAccess = async (c: any, next: any) => {
 					if (session.isAdmin) {
 						await next();
@@ -1812,7 +1813,7 @@ export function EmailExplorer(_options: EmailExplorerOptions = {}) {
 					}
 					// A read-only grant may read, and nothing else.
 					if (
-						c.req.method !== "GET" &&
+						!SAFE_METHODS.includes(c.req.method) &&
 						!WRITE_ROLES.includes(String(grant.role).toLowerCase())
 					) {
 						return c.json(
